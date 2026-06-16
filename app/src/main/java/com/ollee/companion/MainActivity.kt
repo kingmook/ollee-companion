@@ -114,7 +114,6 @@ fun OlleeScreen(vm: MainViewModel = viewModel()) {
             if (ui.connection == ConnectionState.READY) {
                 WatchSummary(ui, vm)
                 StepsCard(ui)
-                SunCard(ui, vm)
                 Text(
                     "Features",
                     style = MaterialTheme.typography.titleMedium,
@@ -282,9 +281,7 @@ private fun FeatureGrid(ui: UiState, vm: MainViewModel) {
         )
         FilledTonalButton(onClick = { vm.syncTimeNow() }) { Text("Sync now") }
     }
-    StepHistoryCard(ui, vm)
-    TemperatureCard(ui, vm)
-    HeartRateCard(ui, vm)
+    HealthRecordsCard(ui, vm)
     FeatureCard("Alarm", Icons.Filled.Alarm, Status.PENDING) {
         Text(
             "Days, chime, snooze & hourly beep — pending protocol capture.",
@@ -292,65 +289,59 @@ private fun FeatureGrid(ui: UiState, vm: MainViewModel) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+    SunCard(ui, vm)
 }
 
 @Composable
-private fun StepHistoryCard(ui: UiState, vm: MainViewModel) {
-    FeatureCard("Step history", Icons.Filled.DirectionsWalk, Status.OK) {
-        if (ui.stepDaily.isEmpty()) {
-            MutedText("No data yet — sync to pull step history.")
-        } else {
-            Text(
-                "Latest day: %,d steps".format(ui.stepDaily.first().steps),
-                style = MaterialTheme.typography.titleMedium,
-            )
-            MutedText("${ui.stepDaily.size} days · last 30 days")
-            Spacer(Modifier.height(2.dp))
-            ui.stepDaily.forEach { d ->
-                LogRow(d.label, "%,d steps".format(d.steps))
+private fun HealthRecordsCard(ui: UiState, vm: MainViewModel) {
+    FeatureCard("Health records", Icons.Filled.Favorite, Status.OK) {
+        RecordSection("Steps", Icons.Filled.DirectionsWalk) {
+            if (ui.stepDaily.isEmpty()) {
+                MutedText("No data yet.")
+            } else {
+                ui.stepDaily.forEach { d -> LogRow(d.label, "%,d steps".format(d.steps)) }
             }
         }
+        RecordSection("Temperature", Icons.Filled.Thermostat) {
+            if (ui.tempDaily.isEmpty()) {
+                MutedText("No data yet.")
+            } else {
+                ui.tempDaily.forEach { d ->
+                    LogRow(d.label, "%.1f–%.1f °C".format(d.minC, d.maxC))
+                }
+            }
+        }
+        RecordSection("Heart rate", Icons.Filled.Favorite) {
+            if (ui.hrDaily.isEmpty()) {
+                MutedText("No samples yet.")
+            } else {
+                ui.hrDaily.forEach { d ->
+                    LogRow(d.label, "${d.min}–${d.max} bpm · avg ${d.avg}")
+                }
+            }
+        }
+        MutedText("Last 30 days · tap to refresh")
         SyncButton(ui, vm)
     }
 }
 
 @Composable
-private fun TemperatureCard(ui: UiState, vm: MainViewModel) {
-    FeatureCard("Temperature", Icons.Filled.Thermostat, Status.OK) {
-        if (ui.tempDaily.isEmpty()) {
-            MutedText("No data yet — sync to pull the hourly log.")
-        } else {
+private fun RecordSection(
+    title: String,
+    icon: ImageVector,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(6.dp))
             Text(
-                "Latest: %.1f °C".format(ui.temperatureLog.first().celsius),
-                style = MaterialTheme.typography.titleMedium,
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
             )
-            MutedText("${ui.temperatureLog.size} readings · last 30 days")
-            Spacer(Modifier.height(2.dp))
-            ui.tempDaily.forEach { d ->
-                LogRow(d.label, "%.1f–%.1f °C".format(d.minC, d.maxC))
-            }
         }
-        SyncButton(ui, vm)
-    }
-}
-
-@Composable
-private fun HeartRateCard(ui: UiState, vm: MainViewModel) {
-    FeatureCard("Heart rate", Icons.Filled.Favorite, Status.OK) {
-        if (ui.hrDaily.isEmpty()) {
-            MutedText("No samples yet — sync to pull HR history.")
-        } else {
-            Text(
-                "Latest: ${ui.hrLog.first().bpm} bpm",
-                style = MaterialTheme.typography.titleMedium,
-            )
-            MutedText("${ui.hrLog.size} samples · last 30 days")
-            Spacer(Modifier.height(2.dp))
-            ui.hrDaily.forEach { d ->
-                LogRow(d.label, "${d.min}–${d.max} bpm · avg ${d.avg}")
-            }
-        }
-        SyncButton(ui, vm)
+        content()
     }
 }
 
