@@ -11,9 +11,7 @@ import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ollee.companion.ble.ConnectionState
-import com.ollee.companion.ble.OlleeGattManager
 import com.ollee.companion.ble.OlleeProtocol
-import com.ollee.companion.ble.OlleeRepository
 import com.ollee.companion.data.RecordStore
 import com.ollee.companion.feature.SunCalculator
 import com.ollee.companion.feature.SunTimes
@@ -71,7 +69,7 @@ data class UiState(
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val repo = OlleeRepository(OlleeGattManager(app))
+    private val repo = (app as OlleeApp).repository
     private val store = RecordStore(app)
 
     private val _ui = MutableStateFlow(UiState())
@@ -146,6 +144,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun connect(address: String) {
         pendingAddress = address
         stopScan()
+        // Start the foreground service so the link survives backgrounding.
+        OlleeConnectionService.start(getApplication())
         viewModelScope.launch {
             runCatching { repo.connect(address) }
                 .onFailure { setMessage("Connect failed: ${it.message}") }
@@ -304,9 +304,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearMessage() = _ui.update { it.copy(message = null) }
     private fun setMessage(m: String) = _ui.update { it.copy(message = m) }
-
-    override fun onCleared() {
-        super.onCleared()
-        repo.release()  // disconnect + close GATT + cancel the manager's scope
-    }
+    // No onCleared() release: the connection is app-scoped and kept alive by the
+    // foreground service; it ends on explicit disconnect, not Activity teardown.
 }

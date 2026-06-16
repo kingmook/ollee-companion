@@ -12,7 +12,6 @@ import android.content.Context
 import android.os.Build
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -156,12 +155,6 @@ class OlleeGattManager(private val context: Context) {
         gatt?.disconnect()
         gatt?.close()
         cleanup()
-    }
-
-    /** Permanently release resources. Call from ViewModel.onCleared(). */
-    fun release() {
-        disconnect()
-        scope.cancel()
     }
 
     private fun cleanup() {

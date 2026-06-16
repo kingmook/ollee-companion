@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFF">
+    <!-- top + bottom straps -->
+    <path android:fillColor="#FFFFFF" android:pathData="M9.5,2h5v3h-5z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M9.5,19h5v3h-5z" />
+    <!-- watch case ring -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:pathData="M12,5 a7,7 0 1,1 0,14 a7,7 0 1,1 0,-14 z" />
+    <!-- hand -->
+    <path android:fillColor="#FFFFFF" android:pathData="M11.25,8h1.5v4.5h-1.5z" />
+</vector>
