@@ -12,6 +12,7 @@ import android.content.Context
 import android.os.Build
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -29,6 +30,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 enum class ConnectionState { DISCONNECTED, CONNECTING, READY }
 
@@ -51,6 +53,7 @@ class OlleeGattManager(private val context: Context) {
     private var gatt: BluetoothGatt? = null
     private val reasm = FrameReassembler()
     private val writeMutex = Mutex()
+    private val requestMutex = Mutex()  // one request round-trip in flight at a time
 
     private var readyDeferred: CompletableDeferred<Unit>? = null
     private var pendingWrite: CompletableDeferred<Unit>? = null
@@ -58,7 +61,7 @@ class OlleeGattManager(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var keepAliveJob: Job? = null
-    private val keepAliveIntervalMs = 60_000L
+    private val keepAliveInterval = 60.seconds
 
     private val callback = object : android.bluetooth.BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
@@ -128,6 +131,9 @@ class OlleeGattManager(private val context: Context) {
      * the state is reset to DISCONNECTED so the UI shows "Connect watch" again.
      */
     suspend fun connect(address: String, timeoutMs: Long = 60_000) {
+        // Ignore if a connection is already in progress or established, so a
+        // second connect() can't overwrite (and leak) the active gatt.
+        if (_state.value != ConnectionState.DISCONNECTED) return
         val mgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         val device = mgr.adapter.getRemoteDevice(address)
         _state.value = ConnectionState.CONNECTING
@@ -152,6 +158,12 @@ class OlleeGattManager(private val context: Context) {
         cleanup()
     }
 
+    /** Permanently release resources. Call from ViewModel.onCleared(). */
+    fun release() {
+        disconnect()
+        scope.cancel()
+    }
+
     private fun cleanup() {
         stopKeepAlive()
         gatt = null
@@ -174,7 +186,7 @@ class OlleeGattManager(private val context: Context) {
         keepAliveJob?.cancel()
         keepAliveJob = scope.launch {
             while (isActive) {
-                delay(keepAliveIntervalMs)
+                delay(keepAliveInterval)
                 if (_state.value != ConnectionState.READY) break
                 runCatching { request(OlleeProtocol.CMD_LIVE) }
             }
@@ -190,7 +202,7 @@ class OlleeGattManager(private val context: Context) {
     suspend fun request(
         cmd: Int, payload: ByteArray = ByteArray(0),
         timeoutMs: Long = 2_000, retries: Int = 1
-    ): OlleeProtocol.Frame {
+    ): OlleeProtocol.Frame = requestMutex.withLock {
         val respCmd = cmd + OlleeProtocol.RESP_OFFSET
         val frame = OlleeProtocol.buildFrame(cmd, payload)
         var lastError: Exception? = null
@@ -199,7 +211,7 @@ class OlleeGattManager(private val context: Context) {
             waiters[respCmd] = deferred
             writeFrame(frame)
             val result = withTimeoutOrNull(timeoutMs.milliseconds) { deferred.await() }
-            if (result != null) return result
+            if (result != null) return@withLock result
             waiters.remove(respCmd)
             lastError = IOException("no reply to cmd 0x${cmd.toString(16)}")
         }

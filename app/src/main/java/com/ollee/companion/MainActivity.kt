@@ -31,7 +31,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -50,9 +49,13 @@ class MainActivity : ComponentActivity() {
             arrayOf(
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
                 Manifest.permission.ACCESS_FINE_LOCATION,
             )
-        else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        else arrayOf(
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        )
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}
@@ -272,8 +275,8 @@ private fun StepsCard(ui: UiState) {
 
 @Composable
 private fun AlarmCard(vm: MainViewModel) {
-    var hour by remember { mutableStateOf(6) }
-    var minute by remember { mutableStateOf(30) }
+    var hour by remember { mutableIntStateOf(6) }
+    var minute by remember { mutableIntStateOf(30) }
     // index 0=Sun .. 6=Sat; default Mon-Fri.
     val days = remember { mutableStateListOf(false, true, true, true, true, true, false) }
     val dayLabels = listOf("S", "M", "T", "W", "T", "F", "S")

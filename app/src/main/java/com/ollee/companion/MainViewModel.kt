@@ -7,9 +7,9 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.content.Context
 import android.location.LocationManager
+import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.ollee.companion.ble.CaptureNeeded
 import com.ollee.companion.ble.ConnectionState
 import com.ollee.companion.ble.OlleeGattManager
 import com.ollee.companion.ble.OlleeProtocol
@@ -31,6 +31,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlin.time.Duration.Companion.minutes
 
 data class ScannedDevice(val name: String, val address: String)
 
@@ -87,7 +88,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var pendingAddress: String? = null
     private var autoSyncJob: Job? = null
-    private val autoSyncIntervalMs = 60 * 60 * 1000L  // 60 minutes
+    private val autoSyncInterval = 60.minutes
 
     init {
         viewModelScope.launch {
@@ -96,8 +97,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 when (state) {
                     ConnectionState.READY -> {
                         // Remember this watch so we can auto-connect next launch.
-                        pendingAddress?.let {
-                            prefs.edit().putString(lastAddressKey, it).apply()
+                        pendingAddress?.let { addr ->
+                            prefs.edit { putString(lastAddressKey, addr) }
                         }
                         startAutoSync()
                     }
@@ -169,7 +170,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     setMessage("Synced with watch.")
                     first = false
                 }
-                delay(autoSyncIntervalMs)
+                delay(autoSyncInterval)
             }
         }
     }
@@ -208,9 +209,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     setMessage("Synced ${recs.size} records (${all.size} kept, 30 days).")
                 }
             }
-            .onFailure {
+            .onFailure { e ->
                 _ui.update { it.copy(syncing = false) }
-                if (announce) setMessage("Records sync failed: ${it.message}")
+                if (announce) setMessage("Records sync failed: ${e.message}")
             }
     }
 
@@ -274,9 +275,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearAlarm() = action { repo.clearAlarm(); "Alarm cleared." }
 
-    // Capture-pending feature actions surface a friendly "how to capture" note.
-    fun setStepGoal(goal: Int) = action { repo.setStepGoal(goal); "" }
-
     @SuppressLint("MissingPermission")
     fun computeSun() = viewModelScope.launch {
         val lm = getApplication<Application>()
@@ -298,8 +296,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val msg = block()
                 if (msg.isNotEmpty()) setMessage(msg)
-            } catch (e: CaptureNeeded) {
-                setMessage("${e.feature}: not decoded yet. ${e.howToCapture}")
             } catch (e: Exception) {
                 setMessage("Error: ${e.message}")
             }
@@ -308,4 +304,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearMessage() = _ui.update { it.copy(message = null) }
     private fun setMessage(m: String) = _ui.update { it.copy(message = m) }
+
+    override fun onCleared() {
+        super.onCleared()
+        repo.release()  // disconnect + close GATT + cancel the manager's scope
+    }
 }

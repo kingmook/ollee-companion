@@ -131,7 +131,7 @@ object OlleeProtocol {
         0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(),
     )
 
-    data class Frame(
+    class Frame(
         val cmd: Int,
         val type: Int,
         val payload: ByteArray,

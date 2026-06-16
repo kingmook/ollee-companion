@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Light window background; the night variant (values-night) swaps to dark
+         so there's no light flash before Compose draws in dark mode. -->
+    <style name="Theme.OlleeCompanion" parent="@android:style/Theme.Material.Light.NoActionBar" />
+</resources>

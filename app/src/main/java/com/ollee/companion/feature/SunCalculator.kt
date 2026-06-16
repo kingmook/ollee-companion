@@ -2,8 +2,12 @@ package com.ollee.companion.feature
 
 import java.util.Calendar
 import java.util.TimeZone
+import kotlin.math.PI
 import kotlin.math.acos
+import kotlin.math.asin
+import kotlin.math.atan
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.sin
 import kotlin.math.tan
 
@@ -33,8 +37,8 @@ object SunCalculator {
         lat: Double, lng: Double, n: Int, isSunrise: Boolean, dateMillis: Long
     ): Long? {
         val zenith = 90.833 // official sunrise/sunset, accounts for refraction
-        val d2r = Math.PI / 180.0
-        val r2d = 180.0 / Math.PI
+        val d2r = PI / 180.0
+        val r2d = 180.0 / PI
 
         val lngHour = lng / 15.0
         val t = if (isSunrise) n + (6 - lngHour) / 24.0 else n + (18 - lngHour) / 24.0
@@ -43,14 +47,14 @@ object SunCalculator {
         var l = m + 1.916 * sin(m * d2r) + 0.020 * sin(2 * m * d2r) + 282.634
         l = (l + 360) % 360
 
-        var ra = r2d * Math.atan(0.91764 * tan(l * d2r))
+        var ra = r2d * atan(0.91764 * tan(l * d2r))
         ra = (ra + 360) % 360
-        val lQuadrant = Math.floor(l / 90.0) * 90
-        val raQuadrant = Math.floor(ra / 90.0) * 90
+        val lQuadrant = floor(l / 90.0) * 90
+        val raQuadrant = floor(ra / 90.0) * 90
         ra = (ra + (lQuadrant - raQuadrant)) / 15.0
 
         val sinDec = 0.39782 * sin(l * d2r)
-        val cosDec = cos(Math.asin(sinDec))
+        val cosDec = cos(asin(sinDec))
 
         val cosH = (cos(zenith * d2r) - sinDec * sin(lat * d2r)) / (cosDec * cos(lat * d2r))
         if (cosH > 1 || cosH < -1) return null // sun never rises/sets that day
