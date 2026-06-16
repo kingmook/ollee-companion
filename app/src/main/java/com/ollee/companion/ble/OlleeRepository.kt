@@ -47,6 +47,22 @@ class OlleeRepository(val gatt: OlleeGattManager) {
     suspend fun setTime(epochSeconds: Long, tzOffsetSeconds: Int) =
         gatt.send(OlleeProtocol.setTimeFrame(epochSeconds, tzOffsetSeconds))
 
+    /**
+     * Drain the watch's health/activity log: ask for the count (0x27), fetch
+     * each record (0x28), then acknowledge (0x2d). Returns steps, hourly
+     * temperature, and heart-rate records.
+     */
+    suspend fun syncRecords(): List<OlleeProtocol.Record> {
+        val count = gatt.request(OlleeProtocol.CMD_REC_COUNT).payload.beInt(0, 4)
+        val records = ArrayList<OlleeProtocol.Record>(count)
+        repeat(count) {
+            val frame = gatt.request(OlleeProtocol.CMD_REC_FETCH, timeoutMs = 3_000)
+            OlleeProtocol.parseRecord(frame.payload)?.let { records.add(it) }
+        }
+        runCatching { gatt.request(OlleeProtocol.CMD_SYNC_DONE, timeoutMs = 1_500) }
+        return records
+    }
+
     // --- Capture-pending (command bytes unknown) ---------------------------
 
     suspend fun setStepGoal(goal: Int): Nothing =
@@ -60,10 +76,6 @@ class OlleeRepository(val gatt: OlleeGattManager) {
     suspend fun setHourlyChime(enabled: Boolean): Nothing =
         throw CaptureNeeded("hourly chime",
             "Toggle the hourly beep/chime setting.")
-
-    suspend fun readTemperatureLog(): Nothing =
-        throw CaptureNeeded("temperature log",
-            "Open the temperature screen and let it sync the hourly log.")
 
     suspend fun setWorldTimeZones(zones: List<Int>): Nothing =
         throw CaptureNeeded("world-time zones",

@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.DirectionsWalk
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Thermostat
@@ -119,7 +120,7 @@ fun OlleeScreen(vm: MainViewModel = viewModel()) {
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(start = 4.dp, top = 4.dp),
                 )
-                FeatureGrid(vm)
+                FeatureGrid(ui, vm)
             } else {
                 ConnectPanel(ui, vm)
             }
@@ -271,7 +272,7 @@ private fun SunCard(ui: UiState, vm: MainViewModel) {
 }
 
 @Composable
-private fun FeatureGrid(vm: MainViewModel) {
+private fun FeatureGrid(ui: UiState, vm: MainViewModel) {
     FeatureCard("Automatic time sync", Icons.Filled.Sync, Status.OK) {
         Text(
             "Runs automatically on connect.",
@@ -280,9 +281,8 @@ private fun FeatureGrid(vm: MainViewModel) {
         )
         FilledTonalButton(onClick = { vm.syncTimeNow() }) { Text("Sync now") }
     }
-    FeatureCard("Temperature", Icons.Filled.Thermostat, Status.PENDING) {
-        Button(onClick = { vm.readTemperature() }) { Text("Sync hourly log") }
-    }
+    TemperatureCard(ui, vm)
+    HeartRateCard(ui, vm)
     FeatureCard("Alarm", Icons.Filled.Alarm, Status.PENDING) {
         Text(
             "Days, chime, snooze & hourly beep — pending protocol capture.",
@@ -290,6 +290,75 @@ private fun FeatureGrid(vm: MainViewModel) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+}
+
+@Composable
+private fun TemperatureCard(ui: UiState, vm: MainViewModel) {
+    val fmt = remember { SimpleDateFormat("MMM d, HH:00", Locale.getDefault()) }
+    FeatureCard("Temperature", Icons.Filled.Thermostat, Status.OK) {
+        if (ui.temperatureLog.isEmpty()) {
+            MutedText("No data yet — sync to pull the hourly log.")
+        } else {
+            Text(
+                "Latest: %.1f °C".format(ui.temperatureLog.first().celsius),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            ui.temperatureLog.take(6).forEach { r ->
+                LogRow(fmt.format(Date(r.tStart * 1000)), "%.1f °C".format(r.celsius))
+            }
+        }
+        SyncButton(ui, vm)
+    }
+}
+
+@Composable
+private fun HeartRateCard(ui: UiState, vm: MainViewModel) {
+    val fmt = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
+    FeatureCard("Heart rate", Icons.Filled.Favorite, Status.OK) {
+        if (ui.hrLog.isEmpty()) {
+            MutedText("No samples yet — sync to pull HR history.")
+        } else {
+            Text(
+                "Latest: ${ui.hrLog.first().bpm} bpm",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            ui.hrLog.take(6).forEach { r ->
+                LogRow(fmt.format(Date(r.tStart * 1000)), "${r.bpm} bpm")
+            }
+        }
+        SyncButton(ui, vm)
+    }
+}
+
+@Composable
+private fun SyncButton(ui: UiState, vm: MainViewModel) {
+    if (ui.syncing) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(10.dp))
+            Text("Syncing…", style = MaterialTheme.typography.bodySmall)
+        }
+    } else {
+        FilledTonalButton(onClick = { vm.syncRecords() }) { Text("Sync health records") }
+    }
+}
+
+@Composable
+private fun LogRow(left: String, right: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(left, style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(right, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun MutedText(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable

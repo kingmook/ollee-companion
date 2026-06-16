@@ -12,6 +12,7 @@ import androidx.lifecycle.viewModelScope
 import com.ollee.companion.ble.CaptureNeeded
 import com.ollee.companion.ble.ConnectionState
 import com.ollee.companion.ble.OlleeGattManager
+import com.ollee.companion.ble.OlleeProtocol
 import com.ollee.companion.ble.OlleeRepository
 import com.ollee.companion.feature.SunCalculator
 import com.ollee.companion.feature.SunTimes
@@ -32,6 +33,9 @@ data class UiState(
     val stepGoal: Int? = null,
     val liveValue: Int? = null,
     val sun: SunTimes? = null,
+    val syncing: Boolean = false,
+    val temperatureLog: List<OlleeProtocol.Record> = emptyList(),
+    val hrLog: List<OlleeProtocol.Record> = emptyList(),
     val message: String? = null,
 )
 
@@ -113,9 +117,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun syncTimeNow() = action { repo.syncTime(); "Time synced." }
 
+    /** Drain the watch's health log and split into temperature + HR history. */
+    fun syncRecords() = viewModelScope.launch {
+        _ui.update { it.copy(syncing = true) }
+        runCatching { repo.syncRecords() }
+            .onSuccess { recs ->
+                val temp = recs.filter { it.type == OlleeProtocol.REC_TEMPERATURE }
+                    .sortedByDescending { it.tStart }
+                val hr = recs.filter { it.type == OlleeProtocol.REC_HEART_RATE }
+                    .sortedByDescending { it.tStart }
+                _ui.update { it.copy(temperatureLog = temp, hrLog = hr, syncing = false) }
+                setMessage("Synced ${recs.size} records.")
+            }
+            .onFailure {
+                _ui.update { it.copy(syncing = false) }
+                setMessage("Records sync failed: ${it.message}")
+            }
+    }
+
     // Capture-pending feature actions surface a friendly "how to capture" note.
     fun setStepGoal(goal: Int) = action { repo.setStepGoal(goal); "" }
-    fun readTemperature() = action { repo.readTemperatureLog(); "" }
 
     @SuppressLint("MissingPermission")
     fun computeSun() = viewModelScope.launch {

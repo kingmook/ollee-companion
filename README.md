@@ -47,8 +47,17 @@ MainActivity.kt       Compose UI
 | Step counter + daily goal | ✅ Read working | capture *goal-set* + *alert* |
 | Sunrise/Sunset by location | ✅ Working (on-phone GPS) | capture to push to watch face |
 | WorldTime / timezone | ✅ Set via `setTime(tz)` | capture multi-city list |
-| Temperature + hourly log | ⏳ Stub | capture log sync |
+| Temperature + hourly log | ✅ Working (records `0x27`/`0x28`/`0x2d`) | — |
+| Heart-rate history (read-only) | ✅ Working (from records log) | — |
 | Alarm (days/chime/snooze/hourly) | ⏳ Stub | capture alarm save |
+
+### Health/activity records (`0x28`)
+
+A full sync drains the watch log: `0x27` returns the record count, then each
+`0x28` returns one 16-byte record `[type:4][tStart:4][tEnd:4][value:4]` (all
+big-endian Unix-second timestamps), and `0x2d` acknowledges. Types: `0` steps
+(value = steps in interval), `1` temperature (hourly window, value = °C × 100),
+`2` heart rate (instantaneous, value = bpm).
 
 ## Finishing a stubbed feature (the capture loop)
 

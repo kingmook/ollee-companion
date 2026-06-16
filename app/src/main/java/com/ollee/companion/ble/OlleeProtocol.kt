@@ -43,6 +43,32 @@ object OlleeProtocol {
     const val CMD_LIVE = 0x39        // live value (battery/steps) polled
     const val CMD_NAME = 0x2E        // name tag string
 
+    // Health/activity record log (drained on a full sync).
+    const val CMD_REC_COUNT = 0x27   // -> 0x47: uint32 count of records waiting
+    const val CMD_REC_FETCH = 0x28   // -> 0x48: one record; poll to drain the log
+    const val CMD_SYNC_DONE = 0x2D   // -> 0x4D: finalize/ack after reading records
+
+    const val REC_STEPS = 0          // value = steps in [tStart, tEnd]
+    const val REC_TEMPERATURE = 1    // hourly window; value = centi-degrees C
+    const val REC_HEART_RATE = 2     // instantaneous sample (tEnd = 0); value = bpm
+
+    /** A single 0x48 health/activity record. Timestamps are Unix seconds. */
+    data class Record(val type: Int, val tStart: Long, val tEnd: Long, val value: Int) {
+        val celsius: Double get() = value / 100.0
+        val bpm: Int get() = value
+    }
+
+    /** Decode a 0x48 record payload: [type:4][tStart:4][tEnd:4][value:4], big-endian. */
+    fun parseRecord(payload: ByteArray): Record? {
+        if (payload.size < 16) return null
+        fun be(off: Int): Long {
+            var v = 0L
+            for (i in off until off + 4) v = (v shl 8) or (payload[i].toLong() and 0xFF)
+            return v
+        }
+        return Record(be(0).toInt(), be(4), be(8), be(12).toInt())
+    }
+
     /** CRC-16/CCITT-FALSE. */
     fun crc16(data: ByteArray): Int {
         var crc = 0xFFFF
