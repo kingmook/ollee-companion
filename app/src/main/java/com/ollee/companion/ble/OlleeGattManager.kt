@@ -109,18 +109,28 @@ class OlleeGattManager(private val context: Context) {
         }
     }
 
-    /** Connect to a bonded/known device by MAC address and wait until READY. */
-    suspend fun connect(address: String, timeoutMs: Long = 15_000) {
+    /**
+     * Connect to a known device by MAC and wait until READY, searching for up
+     * to [timeoutMs] (default 1 minute). autoConnect=true lets the OS keep
+     * looking until the watch appears within the window. On timeout or failure
+     * the state is reset to DISCONNECTED so the UI shows "Connect watch" again.
+     */
+    suspend fun connect(address: String, timeoutMs: Long = 60_000) {
         val mgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         val device = mgr.adapter.getRemoteDevice(address)
         _state.value = ConnectionState.CONNECTING
         reasm.reset()
         val ready = CompletableDeferred<Unit>()
         readyDeferred = ready
-        gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
-        if (withTimeoutOrNull(timeoutMs.milliseconds) { ready.await() } == null) {
+        gatt = device.connectGatt(context, true, callback, BluetoothDevice.TRANSPORT_LE)
+        try {
+            if (withTimeoutOrNull(timeoutMs.milliseconds) { ready.await() } == null) {
+                throw IOException("no watch found within ${timeoutMs / 1000}s")
+            }
+        } catch (e: Exception) {
             disconnect()
-            throw IOException("connection timed out")
+            _state.value = ConnectionState.DISCONNECTED
+            throw e
         }
     }
 

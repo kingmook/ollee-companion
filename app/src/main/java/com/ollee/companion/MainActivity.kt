@@ -70,8 +70,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Status { OK, PENDING }
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OlleeScreen(vm: MainViewModel = viewModel()) {
@@ -174,6 +172,11 @@ private fun ConnectPanel(ui: UiState, vm: MainViewModel) {
             )
             if (ui.connection == ConnectionState.CONNECTING) {
                 CircularProgressIndicator(Modifier.size(28.dp))
+                Text(
+                    "Searching for your watch… (up to 1 min)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             } else {
                 Button(
                     onClick = { vm.connect(vm.defaultAddress) },
@@ -267,7 +270,7 @@ private fun AlarmCard(vm: MainViewModel) {
     val days = remember { mutableStateListOf(false, true, true, true, true, true, false) }
     val dayLabels = listOf("S", "M", "T", "W", "T", "F", "S")
 
-    FeatureCard("Alarm", Icons.Filled.Alarm, Status.OK) {
+    FeatureCard("Alarm", Icons.Filled.Alarm) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "%02d:%02d".format(hour, minute),
@@ -342,7 +345,7 @@ private fun DayToggle(
 @Composable
 private fun SunCard(ui: UiState, vm: MainViewModel) {
     val fmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-    FeatureCard("Sunrise / Sunset", Icons.Filled.WbSunny, Status.OK) {
+    FeatureCard("Sunrise / Sunset", Icons.Filled.WbSunny) {
         ui.sun?.let { s ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                 StatTile("Sunrise", s.sunriseEpoch?.let { fmt.format(Date(it)) } ?: "n/a")
@@ -355,7 +358,7 @@ private fun SunCard(ui: UiState, vm: MainViewModel) {
 
 @Composable
 private fun FeatureGrid(ui: UiState, vm: MainViewModel) {
-    FeatureCard("Automatic time sync", Icons.Filled.Sync, Status.OK) {
+    FeatureCard("Automatic time sync", Icons.Filled.Sync) {
         Text(
             "Runs automatically on connect.",
             style = MaterialTheme.typography.bodySmall,
@@ -370,7 +373,7 @@ private fun FeatureGrid(ui: UiState, vm: MainViewModel) {
 
 @Composable
 private fun HealthRecordsCard(ui: UiState, vm: MainViewModel) {
-    FeatureCard("Health records", Icons.Filled.Favorite, Status.OK) {
+    FeatureCard("Health records", Icons.Filled.Favorite) {
         RecordSection("Steps", Icons.Filled.DirectionsWalk) {
             if (ui.stepDaily.isEmpty()) {
                 MutedText("No data yet.")
@@ -456,7 +459,6 @@ private fun MutedText(text: String) {
 private fun FeatureCard(
     title: String,
     icon: ImageVector,
-    status: Status,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     OutlinedCard {
@@ -464,27 +466,10 @@ private fun FeatureCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(8.dp))
-                Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                StatusChip(status)
+                Text(title, style = MaterialTheme.typography.titleMedium)
             }
             content()
         }
-    }
-}
-
-@Composable
-private fun StatusChip(status: Status) {
-    val (text, bg, fg) = when (status) {
-        Status.OK -> Triple("Working", StatusOkContainer, StatusOkText)
-        Status.PENDING -> Triple("Needs capture", StatusPendingContainer, StatusPendingText)
-    }
-    Surface(shape = RoundedCornerShape(50), color = bg, contentColor = fg) {
-        Text(
-            text,
-            Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.SemiBold,
-        )
     }
 }
 

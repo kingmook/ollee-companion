@@ -36,9 +36,3 @@ val DarkColors = darkColorScheme(
     surface = Color(0xFF0E1514),
     surfaceVariant = Color(0xFF3F4948),
 )
-
-// Semantic accents for status chips (kept separate from the M3 scheme).
-val StatusOkContainer = Color(0xFFB8F0C2)
-val StatusOkText = Color(0xFF0B3D1A)
-val StatusPendingContainer = Color(0xFFFCE6A8)
-val StatusPendingText = Color(0xFF4A3500)
