@@ -2,7 +2,7 @@
 
 I love the Ollee board drop-in replacement for classic casio watches. Unfortunately, 
 the official Android app doesn't work without play services (ie LineageOS devices). 
-Simple Android App to sync time and steps. 
+Simple Android App to sync time and steps built with the help of Opus 4.8 - it's rough.
 
 A native Android app (Kotlin + Jetpack Compose) for the Ollee watch, built on
 the BLE protocol in [`../ollee-ble`](../ollee-ble). It speaks
