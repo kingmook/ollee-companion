@@ -351,32 +351,37 @@ private fun DayToggle(
 }
 
 @Composable
-private fun SunCard(ui: UiState, vm: MainViewModel) {
+private fun SunCard(ui: UiState, vm: MainViewModel, modifier: Modifier = Modifier) {
     val fmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-    FeatureCard("Sunrise / Sunset", Icons.Filled.WbSunny) {
+    FeatureCard("Rise / Set", Icons.Filled.WbSunny, modifier) {
         ui.sun?.let { s ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                 StatTile("Sunrise", s.sunriseEpoch?.let { fmt.format(Date(it)) } ?: "n/a")
                 StatTile("Sunset", s.sunsetEpoch?.let { fmt.format(Date(it)) } ?: "n/a")
             }
         }
-        FilledTonalButton(onClick = { vm.computeSun() }) { Text("Compute for my location") }
+        FilledTonalButton(onClick = { vm.computeSun() }) { Text("Locate") }
     }
 }
 
 @Composable
 private fun FeatureGrid(ui: UiState, vm: MainViewModel) {
-    FeatureCard("Automatic time sync", Icons.Filled.Sync) {
-        Text(
-            "Runs automatically on connect.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        FilledTonalButton(onClick = { vm.syncTimeNow() }) { Text("Sync now") }
-    }
     HealthRecordsCard(ui, vm)
     AlarmCard(vm)
-    SunCard(ui, vm)
+    Row(
+        Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        SunCard(ui, vm, Modifier.weight(1f).fillMaxHeight())
+        TimeSyncCard(vm, Modifier.weight(1f).fillMaxHeight())
+    }
+}
+
+@Composable
+private fun TimeSyncCard(vm: MainViewModel, modifier: Modifier = Modifier) {
+    FeatureCard("Time Sync", Icons.Filled.Sync, modifier) {
+        FilledTonalButton(onClick = { vm.syncTimeNow() }) { Text("Sync now") }
+    }
 }
 
 @Composable
@@ -467,9 +472,10 @@ private fun MutedText(text: String) {
 private fun FeatureCard(
     title: String,
     icon: ImageVector,
+    modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    OutlinedCard {
+    OutlinedCard(modifier) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
