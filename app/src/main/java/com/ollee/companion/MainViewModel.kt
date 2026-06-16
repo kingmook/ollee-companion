@@ -219,6 +219,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return cal.timeInMillis / 1000
     }
 
+    fun setAlarm(hour: Int, minute: Int, daysMask: Int) = action {
+        repo.setAlarm(hour, minute, daysMask)
+        "Alarm set for %02d:%02d.".format(hour, minute)
+    }
+
+    fun clearAlarm() = action { repo.clearAlarm(); "Alarm cleared." }
+
     // Capture-pending feature actions surface a friendly "how to capture" note.
     fun setStepGoal(goal: Int) = action { repo.setStepGoal(goal); "" }
 

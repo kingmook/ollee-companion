@@ -14,7 +14,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Alarm
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Favorite
@@ -258,6 +260,86 @@ private fun StepsCard(ui: UiState) {
 }
 
 @Composable
+private fun AlarmCard(vm: MainViewModel) {
+    var hour by remember { mutableStateOf(6) }
+    var minute by remember { mutableStateOf(30) }
+    // index 0=Sun .. 6=Sat; default Mon-Fri.
+    val days = remember { mutableStateListOf(false, true, true, true, true, true, false) }
+    val dayLabels = listOf("S", "M", "T", "W", "T", "F", "S")
+
+    FeatureCard("Alarm", Icons.Filled.Alarm, Status.OK) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "%02d:%02d".format(hour, minute),
+                style = MaterialTheme.typography.headlineMedium,
+            )
+            Spacer(Modifier.weight(1f))
+            Stepper("Hr") { hour = (hour + it + 24) % 24 }
+            Spacer(Modifier.width(8.dp))
+            Stepper("Min") { minute = (minute + it + 60) % 60 }
+        }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            dayLabels.forEachIndexed { i, label ->
+                DayToggle(
+                    label = label,
+                    selected = days[i],
+                    modifier = Modifier.weight(1f),
+                    onToggle = { days[i] = !days[i] },
+                )
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = {
+                var mask = 0
+                days.forEachIndexed { i, on -> if (on) mask = mask or (1 shl i) }
+                vm.setAlarm(hour, minute, mask)
+            }) { Text("Set alarm") }
+            OutlinedButton(onClick = { vm.clearAlarm() }) { Text("Clear") }
+        }
+    }
+}
+
+@Composable
+private fun Stepper(label: String, onStep: (Int) -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, style = MaterialTheme.typography.labelSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { onStep(-1) }) {
+                Icon(Icons.Filled.Remove, contentDescription = "−")
+            }
+            IconButton(onClick = { onStep(1) }) {
+                Icon(Icons.Filled.Add, contentDescription = "+")
+            }
+        }
+    }
+}
+
+@Composable
+private fun DayToggle(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onToggle: () -> Unit,
+) {
+    Surface(
+        onClick = onToggle,
+        shape = CircleShape,
+        color = if (selected) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = if (selected) MaterialTheme.colorScheme.onPrimary
+        else MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier.aspectRatio(1f),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(label, style = MaterialTheme.typography.labelMedium)
+        }
+    }
+}
+
+@Composable
 private fun SunCard(ui: UiState, vm: MainViewModel) {
     val fmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     FeatureCard("Sunrise / Sunset", Icons.Filled.WbSunny, Status.OK) {
@@ -282,13 +364,7 @@ private fun FeatureGrid(ui: UiState, vm: MainViewModel) {
         FilledTonalButton(onClick = { vm.syncTimeNow() }) { Text("Sync now") }
     }
     HealthRecordsCard(ui, vm)
-    FeatureCard("Alarm", Icons.Filled.Alarm, Status.PENDING) {
-        Text(
-            "Days, chime, snooze & hourly beep — pending protocol capture.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
+    AlarmCard(vm)
     SunCard(ui, vm)
 }
 

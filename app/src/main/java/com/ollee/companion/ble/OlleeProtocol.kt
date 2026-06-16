@@ -36,6 +36,7 @@ object OlleeProtocol {
     const val CMD_INFO = 0x2A        // firmware / serial string
     const val CMD_STATUS = 0x2B      // status block
     const val CMD_SET_TIME = 0x23    // set clock: LE unix ts + tz offset
+    const val CMD_SET_ALARM = 0x25   // set/update alarm (-> 0x45 ack)
     const val CMD_STEP_GOAL = 0x30   // daily step goal
     const val CMD_SETTINGS = 0x32    // settings incl. backlight RGB
     const val CMD_WEEKDAYS = 0x35    // weekday label string
@@ -114,6 +115,21 @@ object OlleeProtocol {
         p.putInt(tzOffsetSeconds)
         return buildFrame(CMD_SET_TIME, p.array() + ByteArray(10))
     }
+
+    /**
+     * Payload for a set-alarm (0x25) command.
+     *
+     * Layout: `00 00 01 HH MM DD 00 05 00 ff ff ff ff` (CRC-verified against the
+     * official app). HH/MM = time; DD = repeat-days bitmask, bit0=Sun .. bit6=Sat
+     * (0x3E = Mon-Fri). A daysMask of 0 clears/disables the alarm. The remaining
+     * bytes (slot id / enabled / snooze / label) are replicated verbatim.
+     */
+    fun alarmPayload(hour: Int, minute: Int, daysMask: Int): ByteArray = byteArrayOf(
+        0x00, 0x00, 0x01,
+        hour.toByte(), minute.toByte(), daysMask.toByte(),
+        0x00, 0x05, 0x00,
+        0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(),
+    )
 
     data class Frame(
         val cmd: Int,

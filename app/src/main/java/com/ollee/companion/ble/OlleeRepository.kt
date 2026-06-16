@@ -1,6 +1,5 @@
 package com.ollee.companion.ble
 
-import com.ollee.companion.feature.AlarmConfig
 import java.nio.charset.StandardCharsets
 
 /**
@@ -65,13 +64,25 @@ class OlleeRepository(val gatt: OlleeGattManager) {
 
     // --- Capture-pending (command bytes unknown) ---------------------------
 
+    /**
+     * Set/update the alarm. daysMask: bit0=Sun .. bit6=Sat (0x3E = Mon-Fri).
+     * The watch acks slowly (~5-7s), so we wait long with no retry to avoid
+     * sending a duplicate alarm.
+     */
+    suspend fun setAlarm(hour: Int, minute: Int, daysMask: Int) {
+        gatt.request(
+            OlleeProtocol.CMD_SET_ALARM,
+            OlleeProtocol.alarmPayload(hour, minute, daysMask),
+            timeoutMs = 8_000, retries = 0,
+        )
+    }
+
+    /** Clear/disable the alarm (sends the alarm frame with zero repeat days). */
+    suspend fun clearAlarm() = setAlarm(0, 0, 0)
+
     suspend fun setStepGoal(goal: Int): Nothing =
         throw CaptureNeeded("step goal write",
             "In the Ollee app, change the daily step goal and save.")
-
-    suspend fun setAlarm(alarm: AlarmConfig): Nothing =
-        throw CaptureNeeded("alarm set",
-            "Create/enable an alarm with days + chime + snooze, and save.")
 
     suspend fun setHourlyChime(enabled: Boolean): Nothing =
         throw CaptureNeeded("hourly chime",

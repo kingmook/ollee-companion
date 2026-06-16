@@ -49,7 +49,7 @@ MainActivity.kt       Compose UI
 | WorldTime / timezone | ✅ Set via `setTime(tz)` | capture multi-city list |
 | Temperature + hourly log | ✅ Working (records `0x27`/`0x28`/`0x2d`), 30-day history | — |
 | Heart-rate history (read-only) | ✅ Working (from records log), 30-day history | — |
-| Alarm (days/chime/snooze/hourly) | ⏳ Stub | capture alarm save |
+| Alarm (time + repeat days) | ✅ Working (`0x25`) | chime/snooze bytes TBD |
 
 ### Health/activity records (`0x28`)
 
