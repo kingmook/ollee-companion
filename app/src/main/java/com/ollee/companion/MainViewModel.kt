@@ -14,15 +14,37 @@ import com.ollee.companion.ble.ConnectionState
 import com.ollee.companion.ble.OlleeGattManager
 import com.ollee.companion.ble.OlleeProtocol
 import com.ollee.companion.ble.OlleeRepository
+import com.ollee.companion.data.RecordStore
 import com.ollee.companion.feature.SunCalculator
 import com.ollee.companion.feature.SunTimes
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 data class ScannedDevice(val name: String, val address: String)
+
+/** One day's temperature summary (low/high/avg in degrees C). */
+data class DailyTemp(
+    val label: String, val dayEpoch: Long,
+    val minC: Double, val maxC: Double, val avgC: Double,
+)
+
+/** One day's heart-rate summary (min/max/avg bpm + sample count). */
+data class DailyHr(
+    val label: String, val dayEpoch: Long,
+    val min: Int, val max: Int, val avg: Int, val count: Int,
+)
+
+/** One day's total step count. */
+data class DailyStep(val label: String, val dayEpoch: Long, val steps: Int)
 
 data class UiState(
     val connection: ConnectionState = ConnectionState.DISCONNECTED,
@@ -36,15 +58,21 @@ data class UiState(
     val syncing: Boolean = false,
     val temperatureLog: List<OlleeProtocol.Record> = emptyList(),
     val hrLog: List<OlleeProtocol.Record> = emptyList(),
+    val tempDaily: List<DailyTemp> = emptyList(),
+    val hrDaily: List<DailyHr> = emptyList(),
+    val stepDaily: List<DailyStep> = emptyList(),
     val message: String? = null,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repo = OlleeRepository(OlleeGattManager(app))
+    private val store = RecordStore(app)
 
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
+
+    private val dayFmt = SimpleDateFormat("EEE MMM d", Locale.getDefault())
 
     /** Pre-filled with the watch discovered during reverse-engineering. */
     val defaultAddress = "00:80:E1:26:08:5D"
@@ -55,6 +83,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _ui.update { it.copy(connection = state) }
                 if (state == ConnectionState.READY) onReady()
             }
+        }
+        // Show stored history immediately, before any connection.
+        viewModelScope.launch {
+            applyRecords(withContext(Dispatchers.IO) { store.loadAll() })
         }
     }
 
@@ -117,22 +149,70 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun syncTimeNow() = action { repo.syncTime(); "Time synced." }
 
-    /** Drain the watch's health log and split into temperature + HR history. */
+    /** Drain the watch's log, merge into 30-day storage, and refresh history. */
     fun syncRecords() = viewModelScope.launch {
         _ui.update { it.copy(syncing = true) }
         runCatching { repo.syncRecords() }
             .onSuccess { recs ->
-                val temp = recs.filter { it.type == OlleeProtocol.REC_TEMPERATURE }
-                    .sortedByDescending { it.tStart }
-                val hr = recs.filter { it.type == OlleeProtocol.REC_HEART_RATE }
-                    .sortedByDescending { it.tStart }
-                _ui.update { it.copy(temperatureLog = temp, hrLog = hr, syncing = false) }
-                setMessage("Synced ${recs.size} records.")
+                val all = withContext(Dispatchers.IO) { store.merge(recs) }
+                applyRecords(all)
+                _ui.update { it.copy(syncing = false) }
+                setMessage("Synced ${recs.size} records (${all.size} kept, 30 days).")
             }
             .onFailure {
                 _ui.update { it.copy(syncing = false) }
                 setMessage("Records sync failed: ${it.message}")
             }
+    }
+
+    /** Split stored records into per-type history and daily summaries. */
+    private fun applyRecords(all: List<OlleeProtocol.Record>) {
+        val temp = all.filter { it.type == OlleeProtocol.REC_TEMPERATURE }
+            .sortedByDescending { it.tStart }
+        val hr = all.filter { it.type == OlleeProtocol.REC_HEART_RATE }
+            .sortedByDescending { it.tStart }
+        val steps = all.filter { it.type == OlleeProtocol.REC_STEPS }
+        _ui.update {
+            it.copy(
+                temperatureLog = temp, hrLog = hr,
+                tempDaily = dailyTemp(temp), hrDaily = dailyHr(hr),
+                stepDaily = dailySteps(steps),
+            )
+        }
+    }
+
+    private fun dailyTemp(list: List<OlleeProtocol.Record>): List<DailyTemp> =
+        list.groupBy { startOfLocalDay(it.tStart) }
+            .map { (day, recs) ->
+                val c = recs.map { it.celsius }
+                DailyTemp(dayFmt.format(Date(day * 1000)), day, c.min(), c.max(), c.average())
+            }
+            .sortedByDescending { it.dayEpoch }
+
+    private fun dailyHr(list: List<OlleeProtocol.Record>): List<DailyHr> =
+        list.groupBy { startOfLocalDay(it.tStart) }
+            .map { (day, recs) ->
+                val b = recs.map { it.bpm }
+                DailyHr(dayFmt.format(Date(day * 1000)), day,
+                    b.min(), b.max(), b.average().toInt(), b.size)
+            }
+            .sortedByDescending { it.dayEpoch }
+
+    private fun dailySteps(list: List<OlleeProtocol.Record>): List<DailyStep> =
+        list.groupBy { startOfLocalDay(it.tStart) }
+            .map { (day, recs) ->
+                DailyStep(dayFmt.format(Date(day * 1000)), day, recs.sumOf { it.value })
+            }
+            .sortedByDescending { it.dayEpoch }
+
+    private fun startOfLocalDay(epochSec: Long): Long {
+        val cal = Calendar.getInstance()
+        cal.timeInMillis = epochSec * 1000
+        cal.set(Calendar.HOUR_OF_DAY, 0)
+        cal.set(Calendar.MINUTE, 0)
+        cal.set(Calendar.SECOND, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        return cal.timeInMillis / 1000
     }
 
     // Capture-pending feature actions surface a friendly "how to capture" note.

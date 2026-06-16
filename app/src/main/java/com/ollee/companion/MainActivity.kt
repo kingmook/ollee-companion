@@ -281,6 +281,7 @@ private fun FeatureGrid(ui: UiState, vm: MainViewModel) {
         )
         FilledTonalButton(onClick = { vm.syncTimeNow() }) { Text("Sync now") }
     }
+    StepHistoryCard(ui, vm)
     TemperatureCard(ui, vm)
     HeartRateCard(ui, vm)
     FeatureCard("Alarm", Icons.Filled.Alarm, Status.PENDING) {
@@ -293,18 +294,39 @@ private fun FeatureGrid(ui: UiState, vm: MainViewModel) {
 }
 
 @Composable
+private fun StepHistoryCard(ui: UiState, vm: MainViewModel) {
+    FeatureCard("Step history", Icons.Filled.DirectionsWalk, Status.OK) {
+        if (ui.stepDaily.isEmpty()) {
+            MutedText("No data yet — sync to pull step history.")
+        } else {
+            Text(
+                "Latest day: %,d steps".format(ui.stepDaily.first().steps),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            MutedText("${ui.stepDaily.size} days · last 30 days")
+            Spacer(Modifier.height(2.dp))
+            ui.stepDaily.forEach { d ->
+                LogRow(d.label, "%,d steps".format(d.steps))
+            }
+        }
+        SyncButton(ui, vm)
+    }
+}
+
+@Composable
 private fun TemperatureCard(ui: UiState, vm: MainViewModel) {
-    val fmt = remember { SimpleDateFormat("MMM d, HH:00", Locale.getDefault()) }
     FeatureCard("Temperature", Icons.Filled.Thermostat, Status.OK) {
-        if (ui.temperatureLog.isEmpty()) {
+        if (ui.tempDaily.isEmpty()) {
             MutedText("No data yet — sync to pull the hourly log.")
         } else {
             Text(
                 "Latest: %.1f °C".format(ui.temperatureLog.first().celsius),
                 style = MaterialTheme.typography.titleMedium,
             )
-            ui.temperatureLog.take(6).forEach { r ->
-                LogRow(fmt.format(Date(r.tStart * 1000)), "%.1f °C".format(r.celsius))
+            MutedText("${ui.temperatureLog.size} readings · last 30 days")
+            Spacer(Modifier.height(2.dp))
+            ui.tempDaily.forEach { d ->
+                LogRow(d.label, "%.1f–%.1f °C".format(d.minC, d.maxC))
             }
         }
         SyncButton(ui, vm)
@@ -313,17 +335,18 @@ private fun TemperatureCard(ui: UiState, vm: MainViewModel) {
 
 @Composable
 private fun HeartRateCard(ui: UiState, vm: MainViewModel) {
-    val fmt = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
     FeatureCard("Heart rate", Icons.Filled.Favorite, Status.OK) {
-        if (ui.hrLog.isEmpty()) {
+        if (ui.hrDaily.isEmpty()) {
             MutedText("No samples yet — sync to pull HR history.")
         } else {
             Text(
                 "Latest: ${ui.hrLog.first().bpm} bpm",
                 style = MaterialTheme.typography.titleMedium,
             )
-            ui.hrLog.take(6).forEach { r ->
-                LogRow(fmt.format(Date(r.tStart * 1000)), "${r.bpm} bpm")
+            MutedText("${ui.hrLog.size} samples · last 30 days")
+            Spacer(Modifier.height(2.dp))
+            ui.hrDaily.forEach { d ->
+                LogRow(d.label, "${d.min}–${d.max} bpm · avg ${d.avg}")
             }
         }
         SyncButton(ui, vm)

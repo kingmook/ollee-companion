@@ -47,8 +47,8 @@ MainActivity.kt       Compose UI
 | Step counter + daily goal | ✅ Read working | capture *goal-set* + *alert* |
 | Sunrise/Sunset by location | ✅ Working (on-phone GPS) | capture to push to watch face |
 | WorldTime / timezone | ✅ Set via `setTime(tz)` | capture multi-city list |
-| Temperature + hourly log | ✅ Working (records `0x27`/`0x28`/`0x2d`) | — |
-| Heart-rate history (read-only) | ✅ Working (from records log) | — |
+| Temperature + hourly log | ✅ Working (records `0x27`/`0x28`/`0x2d`), 30-day history | — |
+| Heart-rate history (read-only) | ✅ Working (from records log), 30-day history | — |
 | Alarm (days/chime/snooze/hourly) | ⏳ Stub | capture alarm save |
 
 ### Health/activity records (`0x28`)
@@ -58,6 +58,12 @@ A full sync drains the watch log: `0x27` returns the record count, then each
 big-endian Unix-second timestamps), and `0x2d` acknowledges. Types: `0` steps
 (value = steps in interval), `1` temperature (hourly window, value = °C × 100),
 `2` heart rate (instantaneous, value = bpm).
+
+Synced records are persisted on-device (`data/RecordStore.kt`, a deduplicated
+JSON store) and kept for a rolling **30 days**, so history accumulates across
+syncs even though the watch's own log is short-lived. The Temperature and Heart-
+rate cards show per-day summaries (daily low/high temperature, daily
+min/max/avg HR).
 
 ## Finishing a stubbed feature (the capture loop)
 
