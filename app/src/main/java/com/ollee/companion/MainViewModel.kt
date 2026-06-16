@@ -18,6 +18,9 @@ import com.ollee.companion.data.RecordStore
 import com.ollee.companion.feature.SunCalculator
 import com.ollee.companion.feature.SunTimes
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -78,11 +81,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Pre-filled with the watch discovered during reverse-engineering. */
     val defaultAddress = "00:80:E1:26:08:5D"
 
+    private var autoSyncJob: Job? = null
+    private val autoSyncIntervalMs = 60 * 60 * 1000L  // 60 minutes
+
     init {
         viewModelScope.launch {
             repo.connectionState.collect { state ->
                 _ui.update { it.copy(connection = state) }
-                if (state == ConnectionState.READY) onReady()
+                when (state) {
+                    ConnectionState.READY -> startAutoSync()
+                    else -> stopAutoSync()
+                }
             }
         }
         // Show stored history immediately, before any connection.
@@ -130,15 +139,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun disconnect() = repo.disconnect()
 
-    /** On connect: automatic time sync, then read device info. */
-    private suspend fun onReady() {
-        runCatching { repo.syncTime() }
-            .onSuccess { setMessage("Time synced automatically.") }
-            .onFailure { setMessage("Auto-sync failed: ${it.message}") }
-        refresh()
+    /**
+     * While connected, automatically sync time + device info + health records
+     * on connect and then every 60 minutes. Cancelled on disconnect.
+     */
+    private fun startAutoSync() {
+        if (autoSyncJob?.isActive == true) return
+        autoSyncJob = viewModelScope.launch {
+            var first = true
+            while (isActive) {
+                runCatching { repo.syncTime() }
+                refreshInternal()
+                doRecordsSync(announce = false)
+                if (first) {
+                    setMessage("Synced with watch.")
+                    first = false
+                }
+                delay(autoSyncIntervalMs)
+            }
+        }
     }
 
-    fun refresh() = viewModelScope.launch {
+    private fun stopAutoSync() {
+        autoSyncJob?.cancel()
+        autoSyncJob = null
+    }
+
+    fun refresh() = viewModelScope.launch { refreshInternal() }
+
+    private suspend fun refreshInternal() {
         runCatching {
             val fw = repo.firmware()
             val goal = repo.stepGoal()
@@ -151,18 +180,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun syncTimeNow() = action { repo.syncTime(); "Time synced." }
 
     /** Drain the watch's log, merge into 30-day storage, and refresh history. */
-    fun syncRecords() = viewModelScope.launch {
+    fun syncRecords() = viewModelScope.launch { doRecordsSync(announce = true) }
+
+    private suspend fun doRecordsSync(announce: Boolean) {
+        if (_ui.value.syncing) return  // avoid overlapping (manual vs auto) syncs
         _ui.update { it.copy(syncing = true) }
         runCatching { repo.syncRecords() }
             .onSuccess { recs ->
                 val all = withContext(Dispatchers.IO) { store.merge(recs) }
                 applyRecords(all)
                 _ui.update { it.copy(syncing = false) }
-                setMessage("Synced ${recs.size} records (${all.size} kept, 30 days).")
+                if (announce) {
+                    setMessage("Synced ${recs.size} records (${all.size} kept, 30 days).")
+                }
             }
             .onFailure {
                 _ui.update { it.copy(syncing = false) }
-                setMessage("Records sync failed: ${it.message}")
+                if (announce) setMessage("Records sync failed: ${it.message}")
             }
     }
 

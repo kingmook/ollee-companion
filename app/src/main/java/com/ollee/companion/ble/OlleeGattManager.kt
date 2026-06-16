@@ -11,6 +11,13 @@ import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.Build
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -49,6 +56,10 @@ class OlleeGattManager(private val context: Context) {
     private var pendingWrite: CompletableDeferred<Unit>? = null
     private val waiters = ConcurrentHashMap<Int, CompletableDeferred<OlleeProtocol.Frame>>()
 
+    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private var keepAliveJob: Job? = null
+    private val keepAliveIntervalMs = 60_000L
+
     private val callback = object : android.bluetooth.BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
@@ -77,6 +88,7 @@ class OlleeGattManager(private val context: Context) {
             if (d.uuid == OlleeProtocol.CCCD) {
                 _state.value = ConnectionState.READY
                 readyDeferred?.takeIf { !it.isCompleted }?.complete(Unit)
+                startKeepAlive()
             }
         }
 
@@ -141,10 +153,33 @@ class OlleeGattManager(private val context: Context) {
     }
 
     private fun cleanup() {
+        stopKeepAlive()
         gatt = null
         waiters.values.forEach { it.takeIf { d -> !d.isCompleted }
             ?.completeExceptionally(IOException("disconnected")) }
         waiters.clear()
+    }
+
+    /**
+     * Keep the link from going idle: poll the watch's live value (the same
+     * lightweight read the official app uses) every minute while connected.
+     * Failures are ignored; a truly dropped link triggers cleanup, which
+     * cancels this job.
+     */
+    private fun startKeepAlive() {
+        keepAliveJob?.cancel()
+        keepAliveJob = scope.launch {
+            while (isActive) {
+                delay(keepAliveIntervalMs)
+                if (_state.value != ConnectionState.READY) break
+                runCatching { request(OlleeProtocol.CMD_LIVE) }
+            }
+        }
+    }
+
+    private fun stopKeepAlive() {
+        keepAliveJob?.cancel()
+        keepAliveJob = null
     }
 
     /** Send a request and await the matching response (cmd + 0x20). */
