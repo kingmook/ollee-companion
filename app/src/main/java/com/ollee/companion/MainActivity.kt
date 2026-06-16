@@ -233,23 +233,24 @@ private fun WatchSummary(ui: UiState, vm: MainViewModel) {
 @Composable
 private fun StepsCard(ui: UiState) {
     val goal = ui.stepGoal ?: 0
-    val live = ui.liveValue ?: 0
-    val fraction = if (goal > 0) (live.toFloat() / goal).coerceIn(0f, 1f) else 0f
+    val today = ui.todaySteps
+    val fraction = if (goal > 0) (today.toFloat() / goal).coerceIn(0f, 1f) else 0f
+    val percent = if (goal > 0) (fraction * 100).toInt() else 0
     ElevatedCard {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Filled.DirectionsWalk, null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(8.dp))
-                Text("Steps", style = MaterialTheme.typography.titleMedium)
+                Text("Steps today", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.weight(1f))
-                Text("$live / $goal", style = MaterialTheme.typography.titleMedium)
+                Text("%,d / %,d".format(today, goal), style = MaterialTheme.typography.titleMedium)
             }
             LinearProgressIndicator(
                 progress = fraction,
                 modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)),
             )
             Text(
-                "Live value vs daily goal. (Live-value meaning still being confirmed.)",
+                "$percent% of daily goal · synced total. Tap “Sync health records” to update.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

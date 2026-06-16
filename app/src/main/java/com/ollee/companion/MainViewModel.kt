@@ -61,6 +61,7 @@ data class UiState(
     val tempDaily: List<DailyTemp> = emptyList(),
     val hrDaily: List<DailyHr> = emptyList(),
     val stepDaily: List<DailyStep> = emptyList(),
+    val todaySteps: Int = 0,
     val message: String? = null,
 )
 
@@ -172,11 +173,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val hr = all.filter { it.type == OlleeProtocol.REC_HEART_RATE }
             .sortedByDescending { it.tStart }
         val steps = all.filter { it.type == OlleeProtocol.REC_STEPS }
+        val stepDays = dailySteps(steps)
+        val todayKey = startOfLocalDay(System.currentTimeMillis() / 1000)
+        val today = stepDays.firstOrNull { it.dayEpoch == todayKey }?.steps ?: 0
         _ui.update {
             it.copy(
                 temperatureLog = temp, hrLog = hr,
                 tempDaily = dailyTemp(temp), hrDaily = dailyHr(hr),
-                stepDaily = dailySteps(steps),
+                stepDaily = stepDays, todaySteps = today,
             )
         }
     }
