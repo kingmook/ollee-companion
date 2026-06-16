@@ -63,4 +63,7 @@ Each stub in `OlleeRepository.kt` names the exact action to record. For any one:
 5. The new `WriteReq` to handle `0x000e` is the command; the `Notify` frames are
    the replies. Its bytes follow the same `AA 55 [CRC] 02 CMD payload` framing —
    drop the new `CMD` + payload encoding into the matching repository method.
-```
+
+## License
+
+[GNU General Public License v3.0](LICENSE).
