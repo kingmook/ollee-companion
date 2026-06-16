@@ -11,7 +11,6 @@ import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.Build
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,8 +18,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.time.Duration.Companion.milliseconds
 
 enum class ConnectionState { DISCONNECTED, CONNECTING, READY }
 
@@ -117,9 +118,7 @@ class OlleeGattManager(private val context: Context) {
         val ready = CompletableDeferred<Unit>()
         readyDeferred = ready
         gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
-        try {
-            withTimeout(timeoutMs) { ready.await() }
-        } catch (e: TimeoutCancellationException) {
+        if (withTimeoutOrNull(timeoutMs.milliseconds) { ready.await() } == null) {
             disconnect()
             throw IOException("connection timed out")
         }
@@ -150,12 +149,10 @@ class OlleeGattManager(private val context: Context) {
             val deferred = CompletableDeferred<OlleeProtocol.Frame>()
             waiters[respCmd] = deferred
             writeFrame(frame)
-            try {
-                return withTimeout(timeoutMs) { deferred.await() }
-            } catch (e: TimeoutCancellationException) {
-                waiters.remove(respCmd)
-                lastError = IOException("no reply to cmd 0x${cmd.toString(16)}")
-            }
+            val result = withTimeoutOrNull(timeoutMs.milliseconds) { deferred.await() }
+            if (result != null) return result
+            waiters.remove(respCmd)
+            lastError = IOException("no reply to cmd 0x${cmd.toString(16)}")
         }
         throw lastError ?: IOException("request failed")
     }
@@ -173,7 +170,7 @@ class OlleeGattManager(private val context: Context) {
             val done = CompletableDeferred<Unit>()
             pendingWrite = done
             writeCharacteristicCompat(g, rx, piece)
-            withTimeout(3_000) { done.await() }
+            withTimeout(3_000.milliseconds) { done.await() }
         }
     }
 
