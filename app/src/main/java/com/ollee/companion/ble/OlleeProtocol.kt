@@ -100,20 +100,19 @@ object OlleeProtocol {
 
     /**
      * Build a set-time (0x23) frame: LE unix timestamp + LE timezone offset,
-     * followed by the constant config tail captured from the official app.
+     * then 10 trailing bytes [A:4][B:4][counter:2]. The official app fills these
+     * with session-specific values, but a live test (zeroing them while the
+     * clock still set correctly) confirmed the watch ignores them, so we send
+     * zeros instead of carrying stale captured bytes.
      */
     fun setTimeFrame(
         epochSeconds: Long = System.currentTimeMillis() / 1000,
         tzOffsetSeconds: Int = TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000
     ): ByteArray {
-        val tail = byteArrayOf(
-            0x33, 0xC9.toByte(), 0x00, 0x00,
-            0x81.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0x03, 0x00
-        )
         val p = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
         p.putInt((epochSeconds and 0xFFFFFFFFL).toInt())
         p.putInt(tzOffsetSeconds)
-        return buildFrame(CMD_SET_TIME, p.array() + tail)
+        return buildFrame(CMD_SET_TIME, p.array() + ByteArray(10))
     }
 
     data class Frame(
