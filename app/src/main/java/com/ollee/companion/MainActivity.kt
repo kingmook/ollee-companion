@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.BluetoothDisabled
 import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Refresh
@@ -228,6 +229,13 @@ private fun WatchSummary(ui: UiState, vm: MainViewModel) {
                 }
                 IconButton(onClick = { vm.refresh() }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
+                }
+                IconButton(onClick = { vm.disconnect() }) {
+                    Icon(
+                        Icons.Filled.BluetoothDisabled,
+                        contentDescription = "Disconnect",
+                        tint = MaterialTheme.colorScheme.error,
+                    )
                 }
             }
         }

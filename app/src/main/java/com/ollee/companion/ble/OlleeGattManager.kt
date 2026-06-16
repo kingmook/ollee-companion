@@ -158,6 +158,10 @@ class OlleeGattManager(private val context: Context) {
         waiters.values.forEach { it.takeIf { d -> !d.isCompleted }
             ?.completeExceptionally(IOException("disconnected")) }
         waiters.clear()
+        // Calling close() right after disconnect() can suppress the
+        // onConnectionStateChange callback, so set the state here too — this is
+        // the single teardown path for both manual disconnect and dropped links.
+        _state.value = ConnectionState.DISCONNECTED
     }
 
     /**
