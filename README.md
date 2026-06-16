@@ -1,9 +1,12 @@
 # Ollee Companion (Android)
 
+I love the Ollee board drop-in replacement for classic casio watches. Unfortunately, 
+the official Android app doesn't work without play services (ie LineageOS devices). 
+Simple Android App to sync time and steps. 
+
 A native Android app (Kotlin + Jetpack Compose) for the Ollee watch, built on
-the reverse-engineered BLE protocol in [`../ollee-ble`](../ollee-ble). It speaks
-the watch's custom framing over Nordic UART Service directly — no official app
-needed.
+the BLE protocol in [`../ollee-ble`](../ollee-ble). It speaks
+the watch's custom framing over Nordic UART Service directly.
 
 ## Build & run
 
