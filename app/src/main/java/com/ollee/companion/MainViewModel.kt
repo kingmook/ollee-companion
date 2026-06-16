@@ -78,9 +78,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val dayFmt = SimpleDateFormat("EEE MMM d", Locale.getDefault())
 
-    /** Pre-filled with the watch discovered during reverse-engineering. */
-    val defaultAddress = "00:80:E1:26:08:5D"
+    private val prefs = app.getSharedPreferences("ollee_prefs", Context.MODE_PRIVATE)
+    private val lastAddressKey = "last_address"
 
+    /** Address to connect to: last successfully connected watch, else default. */
+    val defaultAddress: String
+        get() = prefs.getString(lastAddressKey, null) ?: "00:80:E1:26:08:5D"
+
+    private var pendingAddress: String? = null
     private var autoSyncJob: Job? = null
     private val autoSyncIntervalMs = 60 * 60 * 1000L  // 60 minutes
 
@@ -89,7 +94,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             repo.connectionState.collect { state ->
                 _ui.update { it.copy(connection = state) }
                 when (state) {
-                    ConnectionState.READY -> startAutoSync()
+                    ConnectionState.READY -> {
+                        // Remember this watch so we can auto-connect next launch.
+                        pendingAddress?.let {
+                            prefs.edit().putString(lastAddressKey, it).apply()
+                        }
+                        startAutoSync()
+                    }
                     else -> stopAutoSync()
                 }
             }
@@ -98,6 +109,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             applyRecords(withContext(Dispatchers.IO) { store.loadAll() })
         }
+        // On launch, auto-connect to the last successfully connected watch.
+        prefs.getString(lastAddressKey, null)?.let { connect(it) }
     }
 
     private val scanner get() =
@@ -130,6 +143,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun connect(address: String) {
+        pendingAddress = address
         stopScan()
         viewModelScope.launch {
             runCatching { repo.connect(address) }
