@@ -22,9 +22,13 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -59,6 +63,7 @@ data class UiState(
     val liveValue: Int? = null,
     val sun: SunTimes? = null,
     val syncing: Boolean = false,
+    val verifying: Boolean = false,
     val temperatureLog: List<OlleeProtocol.Record> = emptyList(),
     val hrLog: List<OlleeProtocol.Record> = emptyList(),
     val tempDaily: List<DailyTemp> = emptyList(),
@@ -92,6 +97,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** True only when the user taps Disconnect, to suppress auto-reconnect. */
     private var userDisconnect = false
     private val reconnectDelay = 3.seconds
+
+    /** Serializes syncs so a resume-verify can await an in-flight auto-sync. */
+    private val syncMutex = Mutex()
+    private var verifyJob: Job? = null
+    private val verifyBudget = 60.seconds
 
     /** Sanity ranges to reject corrupt/sentinel sensor records. */
     private val plausibleTempC = -40.0..85.0
@@ -191,16 +201,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * On returning to the foreground, confirm the link is actually alive. A
-     * stale ("zombie") link still reports READY but no longer answers; if a
-     * quick probe fails we drop it so auto-reconnect can re-establish it.
+     * On returning to the foreground, block the UI with a "reconnecting…"
+     * overlay until the link is confirmed live AND a fresh sync completes — the
+     * silent few-second update was confusing. A stale ("zombie") link still
+     * reports READY but no longer answers, so we probe it; if it's dead we drop
+     * it and wait for auto-reconnect. If nothing comes back within
+     * [verifyBudget] (1 min) we kill the connection and show the connect screen.
      */
     fun verifyConnection() {
         if (repo.connectionState.value != ConnectionState.READY) return
-        viewModelScope.launch {
-            if (runCatching { repo.liveValue() }.isSuccess) refreshInternal()
-            else repo.disconnect()
+        if (verifyJob?.isActive == true) return
+        verifyJob = viewModelScope.launch {
+            _ui.update { it.copy(verifying = true) }
+            val ok = withTimeoutOrNull(verifyBudget) { verifyAndSync() } ?: false
+            if (!ok) {
+                // Couldn't confirm a working link in time — tear it down.
+                userDisconnect = true
+                repo.disconnect()
+                OlleeConnectionService.stop(getApplication())
+                setMessage("Couldn't reach the watch — disconnected.")
+            }
+            _ui.update { it.copy(verifying = false) }
         }
+    }
+
+    /** Probe the link (recovering a stale one), then run a full sync. */
+    private suspend fun verifyAndSync(): Boolean {
+        // The watch must answer a *real* query. A half-wedged link can still ACK
+        // the lightweight live poll while ignoring info/goal reads, so probe with
+        // the actual reads and treat "no real data" as a dead link.
+        if (!tryRefresh()) {
+            repo.disconnect()
+            repo.connectionState.first { it == ConnectionState.READY }
+            if (!tryRefresh()) return false
+        }
+        runCatching { repo.syncTime() }
+        doRecordsSync(announce = false)
+        return true
     }
 
     /**
@@ -212,9 +249,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         autoSyncJob = viewModelScope.launch {
             var first = true
             while (isActive) {
-                runCatching { repo.syncTime() }
-                refreshInternal()
-                doRecordsSync(announce = false)
+                fullSync(announce = false)
                 if (first) {
                     setMessage("Synced with watch.")
                     first = false
@@ -222,6 +257,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 delay(autoSyncInterval)
             }
         }
+    }
+
+    /** One full pass: push time, refresh device info, drain records. */
+    private suspend fun fullSync(announce: Boolean) {
+        runCatching { repo.syncTime() }
+        refreshInternal()
+        doRecordsSync(announce)
     }
 
     private fun stopAutoSync() {
@@ -232,8 +274,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun refresh() = viewModelScope.launch { refreshInternal() }
 
     private suspend fun refreshInternal() {
-        // Read each field independently and keep the last-known value on a miss,
-        // so one slow/failed read can't blank out the whole summary card.
+        if (!tryRefresh()) setMessage("Watch not responding — retrying…")
+    }
+
+    /**
+     * Read device info, keeping the last-known value on a per-field miss so one
+     * slow read can't blank the whole card. Returns true only if the watch
+     * actually answered a core read (firmware or step goal) — the signal that
+     * the link is genuinely alive, not just superficially connected.
+     */
+    private suspend fun tryRefresh(): Boolean {
         val fw = runCatching { repo.firmware() }.getOrNull()
         val goal = runCatching { repo.stepGoal() }.getOrNull()
         val live = runCatching { repo.liveValue() }.getOrNull()
@@ -246,9 +296,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 name = nm ?: it.name,
             )
         }
-        if (fw == null && goal == null && live == null) {
-            setMessage("Watch not responding — retrying…")
-        }
+        return fw != null || goal != null
     }
 
     fun syncTimeNow() = action { repo.syncTime(); "Time synced." }
@@ -256,22 +304,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Drain the watch's log, merge into 30-day storage, and refresh history. */
     fun syncRecords() = viewModelScope.launch { doRecordsSync(announce = true) }
 
-    private suspend fun doRecordsSync(announce: Boolean) {
-        if (_ui.value.syncing) return  // avoid overlapping (manual vs auto) syncs
+    private suspend fun doRecordsSync(announce: Boolean) = syncMutex.withLock {
+        // Serialized (not skipped): a resume-verify must be able to await an
+        // already-running auto-sync rather than racing past it.
         _ui.update { it.copy(syncing = true) }
-        runCatching { repo.syncRecords() }
-            .onSuccess { recs ->
-                val all = withContext(Dispatchers.IO) { store.merge(recs) }
-                applyRecords(all)
-                _ui.update { it.copy(syncing = false) }
-                if (announce) {
-                    setMessage("Synced ${recs.size} records (${all.size} kept, 30 days).")
-                }
+        try {
+            val recs = repo.syncRecords()
+            val all = withContext(Dispatchers.IO) { store.merge(recs) }
+            applyRecords(all)
+            if (announce) {
+                setMessage("Synced ${recs.size} records (${all.size} kept, 30 days).")
             }
-            .onFailure { e ->
-                _ui.update { it.copy(syncing = false) }
-                if (announce) setMessage("Records sync failed: ${e.message}")
-            }
+        } catch (e: Exception) {
+            if (announce) setMessage("Records sync failed: ${e.message}")
+        } finally {
+            _ui.update { it.copy(syncing = false) }
+        }
     }
 
     /** Split stored records into per-type history and daily summaries. */

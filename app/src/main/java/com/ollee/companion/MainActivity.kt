@@ -32,11 +32,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ollee.companion.ble.ConnectionState
@@ -87,17 +88,21 @@ fun OlleeScreen(vm: MainViewModel = viewModel()) {
         ui.message?.let { snackbar.showSnackbar(it); vm.clearMessage() }
     }
 
-    // On returning to the foreground, verify the link is still live (a stale
-    // BLE link can keep reporting "connected" while no longer responding).
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
+    // When the whole app returns to the foreground, verify the link is still
+    // live and re-sync, blocking the UI until it's done. ProcessLifecycleOwner
+    // is process-scoped, so this fires reliably even when the notification tap
+    // spins up a fresh Activity — and ON_START won't fire on cold launch (the
+    // observer is added after the process has already started).
+    DisposableEffect(Unit) {
+        val owner = ProcessLifecycleOwner.get()
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) vm.verifyConnection()
+            if (event == Lifecycle.Event.ON_START) vm.verifyConnection()
         }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        owner.lifecycle.addObserver(observer)
+        onDispose { owner.lifecycle.removeObserver(observer) }
     }
 
+    Box(Modifier.fillMaxSize()) {
     Scaffold(
         topBar = {
             TopAppBar(
@@ -142,6 +147,38 @@ fun OlleeScreen(vm: MainViewModel = viewModel()) {
                 ConnectPanel(ui, vm)
             }
             Spacer(Modifier.height(24.dp))
+        }
+    }
+        if (ui.verifying) ReconnectingOverlay(ui.connection)
+    }
+}
+
+/** Full-screen blocking scrim shown while re-verifying/syncing on resume. */
+@Composable
+private fun ReconnectingOverlay(connection: ConnectionState) {
+    val text = if (connection == ConnectionState.READY) "Syncing with your watch…"
+    else "Reconnecting to your watch…"
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.6f))
+            // Swallow all input so nothing underneath is interactive.
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) awaitPointerEvent().changes.forEach { it.consume() }
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(shape = RoundedCornerShape(20.dp), tonalElevation = 6.dp) {
+            Column(
+                Modifier.padding(28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                CircularProgressIndicator()
+                Text(text, style = MaterialTheme.typography.titleMedium)
+            }
         }
     }
 }

@@ -80,7 +80,11 @@ class OlleeConnectionService : Service() {
     private fun buildNotification(text: String): Notification {
         val openApp = PendingIntent.getActivity(
             this, 0,
-            Intent(this, MainActivity::class.java),
+            Intent(this, MainActivity::class.java).addFlags(
+                // Reuse the existing Activity (with singleTop) instead of
+                // creating a duplicate when the notification is tapped.
+                Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP,
+            ),
             PendingIntent.FLAG_IMMUTABLE,
         )
         return Notification.Builder(this, CHANNEL_ID)
