@@ -30,6 +30,7 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 
 data class ScannedDevice(val name: String, val address: String)
 
@@ -88,6 +89,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var autoSyncJob: Job? = null
     private val autoSyncInterval = 60.minutes
 
+    /** True only when the user taps Disconnect, to suppress auto-reconnect. */
+    private var userDisconnect = false
+    private val reconnectDelay = 3.seconds
+
+    /** Sanity ranges to reject corrupt/sentinel sensor records. */
+    private val plausibleTempC = -40.0..85.0
+    private val plausibleBpm = 20..255
+
     init {
         viewModelScope.launch {
             repo.connectionState.collect { state ->
@@ -100,7 +109,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         }
                         startAutoSync()
                     }
-                    else -> stopAutoSync()
+                    ConnectionState.CONNECTING -> stopAutoSync()
+                    ConnectionState.DISCONNECTED -> {
+                        stopAutoSync()
+                        maybeAutoReconnect()
+                    }
                 }
             }
         }
@@ -142,6 +155,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun connect(address: String) {
+        userDisconnect = false
         pendingAddress = address
         stopScan()
         // Start the foreground service so the link survives backgrounding.
@@ -152,7 +166,42 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun disconnect() = repo.disconnect()
+    fun disconnect() {
+        userDisconnect = true
+        repo.disconnect()
+        OlleeConnectionService.stop(getApplication())
+    }
+
+    /**
+     * Re-establish the link after an *unexpected* drop (stale link tear-down,
+     * watch out of range) — but not after the user taps Disconnect. The
+     * foreground service stays up, so we keep trying until the watch returns.
+     */
+    private fun maybeAutoReconnect() {
+        if (userDisconnect) return
+        val addr = prefs.getString(lastAddressKey, null) ?: return
+        viewModelScope.launch {
+            delay(reconnectDelay)
+            if (!userDisconnect &&
+                repo.connectionState.value == ConnectionState.DISCONNECTED
+            ) {
+                connect(addr)
+            }
+        }
+    }
+
+    /**
+     * On returning to the foreground, confirm the link is actually alive. A
+     * stale ("zombie") link still reports READY but no longer answers; if a
+     * quick probe fails we drop it so auto-reconnect can re-establish it.
+     */
+    fun verifyConnection() {
+        if (repo.connectionState.value != ConnectionState.READY) return
+        viewModelScope.launch {
+            if (runCatching { repo.liveValue() }.isSuccess) refreshInternal()
+            else repo.disconnect()
+        }
+    }
 
     /**
      * While connected, automatically sync time + device info + health records
@@ -183,13 +232,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun refresh() = viewModelScope.launch { refreshInternal() }
 
     private suspend fun refreshInternal() {
-        runCatching {
-            val fw = repo.firmware()
-            val goal = repo.stepGoal()
-            val live = repo.liveValue()
-            val nm = runCatching { repo.name() }.getOrNull()
-            _ui.update { it.copy(firmware = fw, stepGoal = goal, liveValue = live, name = nm) }
-        }.onFailure { setMessage("Read failed: ${it.message}") }
+        // Read each field independently and keep the last-known value on a miss,
+        // so one slow/failed read can't blank out the whole summary card.
+        val fw = runCatching { repo.firmware() }.getOrNull()
+        val goal = runCatching { repo.stepGoal() }.getOrNull()
+        val live = runCatching { repo.liveValue() }.getOrNull()
+        val nm = runCatching { repo.name() }.getOrNull()
+        _ui.update {
+            it.copy(
+                firmware = fw ?: it.firmware,
+                stepGoal = goal ?: it.stepGoal,
+                liveValue = live ?: it.liveValue,
+                name = nm ?: it.name,
+            )
+        }
+        if (fw == null && goal == null && live == null) {
+            setMessage("Watch not responding — retrying…")
+        }
     }
 
     fun syncTimeNow() = action { repo.syncTime(); "Time synced." }
@@ -217,10 +276,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Split stored records into per-type history and daily summaries. */
     private fun applyRecords(all: List<OlleeProtocol.Record>) {
-        val temp = all.filter { it.type == OlleeProtocol.REC_TEMPERATURE }
-            .sortedByDescending { it.tStart }
-        val hr = all.filter { it.type == OlleeProtocol.REC_HEART_RATE }
-            .sortedByDescending { it.tStart }
+        // Drop physically-impossible readings (corrupt/sentinel records) so a
+        // single garbage value can't skew a day's min/max (e.g. 14854 °C).
+        val temp = all.filter {
+            it.type == OlleeProtocol.REC_TEMPERATURE && it.celsius in plausibleTempC
+        }.sortedByDescending { it.tStart }
+        val hr = all.filter {
+            it.type == OlleeProtocol.REC_HEART_RATE && it.bpm in plausibleBpm
+        }.sortedByDescending { it.tStart }
         val steps = all.filter { it.type == OlleeProtocol.REC_STEPS }
         val stepDays = dailySteps(steps)
         val todayKey = startOfLocalDay(System.currentTimeMillis() / 1000)

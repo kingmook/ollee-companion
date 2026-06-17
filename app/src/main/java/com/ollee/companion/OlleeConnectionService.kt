@@ -35,23 +35,20 @@ class OlleeConnectionService : Service() {
         createChannel()
         startForegroundCompat("Keeping your Ollee watch connected")
 
+        // Mirror the connection state in the notification. The service is NOT
+        // stopped on a dropped link — the ViewModel auto-reconnects, so we stay
+        // foreground through transient drops. It is stopped explicitly via
+        // stop() only when the user taps Disconnect.
         val repo = (application as OlleeApp).repository
-        var active = false
         scope.launch {
             repo.connectionState.collect { state ->
-                when (state) {
-                    ConnectionState.CONNECTING -> {
-                        active = true
-                        updateNotification("Searching for your Ollee watch…")
+                updateNotification(
+                    when (state) {
+                        ConnectionState.CONNECTING -> "Searching for your Ollee watch…"
+                        ConnectionState.READY -> "Connected to your Ollee watch"
+                        ConnectionState.DISCONNECTED -> "Reconnecting to your Ollee watch…"
                     }
-                    ConnectionState.READY -> {
-                        active = true
-                        updateNotification("Connected to your Ollee watch")
-                    }
-                    // Ignore the initial DISCONNECTED before we've connected;
-                    // once active, a disconnect means we're done.
-                    ConnectionState.DISCONNECTED -> if (active) stopSelf()
-                }
+                )
             }
         }
     }
@@ -112,6 +109,10 @@ class OlleeConnectionService : Service() {
             ContextCompat.startForegroundService(
                 context, Intent(context, OlleeConnectionService::class.java),
             )
+        }
+
+        fun stop(context: Context) {
+            context.stopService(Intent(context, OlleeConnectionService::class.java))
         }
     }
 }
