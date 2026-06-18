@@ -11,6 +11,7 @@ import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ollee.companion.ble.ConnectionState
+import com.ollee.companion.ble.LinkDeadException
 import com.ollee.companion.ble.OlleeProtocol
 import com.ollee.companion.data.RecordStore
 import com.ollee.companion.feature.SunCalculator
@@ -65,6 +66,7 @@ data class UiState(
     val sun: SunTimes? = null,
     val syncing: Boolean = false,
     val verifying: Boolean = false,
+    val reconnecting: Boolean = false,
     val temperatureLog: List<OlleeProtocol.Record> = emptyList(),
     val hrLog: List<OlleeProtocol.Record> = emptyList(),
     val tempDaily: List<DailyTemp> = emptyList(),
@@ -98,6 +100,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** True only when the user taps Disconnect, to suppress auto-reconnect. */
     private var userDisconnect = false
     private val reconnectDelay = 3.seconds
+    private var reconnectingClearJob: Job? = null
+    // How long to keep the watch screen up (with a "Reconnecting…" banner)
+    // during an auto-reconnect before falling back to the connect panel.
+    private val reconnectingGrace = 15.seconds
 
     /** Serializes syncs so a resume-verify can await an in-flight auto-sync. */
     private val syncMutex = Mutex()
@@ -120,6 +126,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         pendingAddress?.let { addr ->
                             prefs.edit { putString(lastAddressKey, addr) }
                         }
+                        reconnectingClearJob?.cancel()
+                        _ui.update { it.copy(reconnecting = false) }
                         startAutoSync()
                     }
                     ConnectionState.CONNECTING -> stopAutoSync()
@@ -181,6 +189,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun disconnect() {
         userDisconnect = true
+        reconnectingClearJob?.cancel()
+        _ui.update { it.copy(reconnecting = false) }
         repo.disconnect()
         OlleeConnectionService.stop(getApplication())
     }
@@ -193,6 +203,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun maybeAutoReconnect() {
         if (userDisconnect) return
         val addr = prefs.getString(lastAddressKey, null) ?: return
+        // Keep the watch screen up (with a banner) instead of flashing the
+        // connect panel, but fall back to it if reconnection drags on.
+        _ui.update { it.copy(reconnecting = true) }
+        reconnectingClearJob?.cancel()
+        reconnectingClearJob = viewModelScope.launch {
+            delay(reconnectingGrace)
+            if (repo.connectionState.value != ConnectionState.READY) {
+                _ui.update { it.copy(reconnecting = false) }
+            }
+        }
         viewModelScope.launch {
             delay(reconnectDelay)
             if (!userDisconnect &&
@@ -328,10 +348,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val recs = try {
                     repo.syncRecords()
-                } catch (e: Exception) {
-                    // The link may have gone stale in the background (it can
-                    // answer some commands while ignoring others). Force a clean
-                    // reconnect and try once more before giving up.
+                } catch (e: LinkDeadException) {
+                    // Only a genuinely dead link (not a mid-drain hiccup) forces
+                    // a clean reconnect and one retry before giving up.
                     if (recover && reconnectFresh()) repo.syncRecords() else throw e
                 }
                 val all = withContext(Dispatchers.IO) { store.merge(recs) }

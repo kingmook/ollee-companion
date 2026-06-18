@@ -61,7 +61,6 @@ class OlleeGattManager(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var keepAliveJob: Job? = null
     private val keepAliveInterval = 30.seconds
-    private val maxKeepAliveFailures = 2
 
     private val callback = object : android.bluetooth.BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
@@ -179,20 +178,15 @@ class OlleeGattManager(private val context: Context) {
     private fun startKeepAlive() {
         keepAliveJob?.cancel()
         keepAliveJob = scope.launch {
-            var failures = 0
             while (isActive) {
                 delay(keepAliveInterval)
                 if (_state.value != ConnectionState.READY) break
-                if (runCatching { request(OlleeProtocol.CMD_LIVE) }.isSuccess) {
-                    failures = 0
-                } else if (++failures >= maxKeepAliveFailures) {
-                    // The link has gone stale without an OS disconnect callback
-                    // (common after long idle/backgrounding): the watch dropped us
-                    // but Android still reports STATE_CONNECTED. Tear it down so the
-                    // app sees DISCONNECTED and can re-establish a live link.
-                    disconnect()
-                    break
-                }
+                // Keep the link warm. A missed poll is NOT treated as a dead
+                // link — that caused false disconnects (and a jarring reconnect
+                // flash) on a merely-flaky poll. Genuine drops still arrive via
+                // onConnectionStateChange; staleness is caught on resume-verify
+                // and self-healed by the manual records sync.
+                runCatching { request(OlleeProtocol.CMD_LIVE) }
             }
         }
     }

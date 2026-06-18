@@ -1,6 +1,14 @@
 package com.ollee.companion.ble
 
+import kotlinx.coroutines.CancellationException
+import java.io.IOException
 import java.nio.charset.StandardCharsets
+
+/** Thrown when the link looks dead (a command can't be reached at all). */
+class LinkDeadException(cause: Throwable) : IOException(cause.message, cause)
+
+private const val MAX_RECORDS = 5_000        // sanity cap on a (possibly garbage) count
+private const val MAX_FETCH_MISSES = 4       // consecutive dropped fetches => link dead
 
 /** High-level Ollee API built on [OlleeGattManager]. */
 class OlleeRepository(val gatt: OlleeGattManager) {
@@ -48,18 +56,41 @@ class OlleeRepository(val gatt: OlleeGattManager) {
      * temperature, and heart-rate records.
      */
     suspend fun syncRecords(): List<OlleeProtocol.Record> {
-        // The first command after an idle wake can be slow, so give the count a
-        // generous window and extra retries (it's idempotent — just a read).
-        val count = gatt.request(
-            OlleeProtocol.CMD_REC_COUNT, timeoutMs = 5_000, retries = 2,
-        ).payload.beInt(4)
+        val count = countRecords().coerceIn(0, MAX_RECORDS)
         val records = ArrayList<OlleeProtocol.Record>(count)
+        var consecutiveMisses = 0
         repeat(count) {
-            val frame = gatt.request(OlleeProtocol.CMD_REC_FETCH, timeoutMs = 3_000)
-            OlleeProtocol.parseRecord(frame.payload)?.let { records.add(it) }
+            try {
+                val frame = gatt.request(
+                    OlleeProtocol.CMD_REC_FETCH, timeoutMs = 4_000, retries = 1,
+                )
+                OlleeProtocol.parseRecord(frame.payload)?.let { records.add(it) }
+                consecutiveMisses = 0
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // A live link occasionally drops a single record reply; skip it
+                // rather than losing the whole batch. Bail (as a dead link) only
+                // if many in a row fail.
+                if (++consecutiveMisses >= MAX_FETCH_MISSES) throw LinkDeadException(e)
+            }
         }
         runCatching { gatt.request(OlleeProtocol.CMD_SYNC_DONE, timeoutMs = 1_500) }
         return records
+    }
+
+    /**
+     * Read the pending-record count (0x27). This is the drain's liveness check:
+     * if it can't be reached, the link is dead. The first command after an idle
+     * wake can be slow, so it gets a generous window and extra retries.
+     */
+    private suspend fun countRecords(): Int = try {
+        gatt.request(OlleeProtocol.CMD_REC_COUNT, timeoutMs = 5_000, retries = 2)
+            .payload.beInt(4)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        throw LinkDeadException(e)
     }
 
     // --- Alarm -------------------------------------------------------------

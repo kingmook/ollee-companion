@@ -134,7 +134,10 @@ fun OlleeScreen(vm: MainViewModel = viewModel()) {
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Spacer(Modifier.height(2.dp))
-            if (ui.connection == ConnectionState.READY) {
+            // Keep the watch screen up during a brief auto-reconnect rather than
+            // flashing the connect panel; show a small banner instead.
+            if (ui.connection == ConnectionState.READY || ui.reconnecting) {
+                if (ui.connection != ConnectionState.READY) ReconnectingBanner()
                 WatchSummary(ui, vm)
                 StepsCard(ui)
                 Text(
@@ -179,6 +182,25 @@ private fun ReconnectingOverlay(connection: ConnectionState) {
                 CircularProgressIndicator()
                 Text(text, style = MaterialTheme.typography.titleMedium)
             }
+        }
+    }
+}
+
+/** Slim inline banner shown while the link is briefly re-establishing. */
+@Composable
+private fun ReconnectingBanner() {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(10.dp))
+            Text("Reconnecting to your watch…", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
