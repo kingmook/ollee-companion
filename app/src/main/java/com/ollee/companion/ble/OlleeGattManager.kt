@@ -171,9 +171,9 @@ class OlleeGattManager(private val context: Context) {
 
     /**
      * Keep the link from going idle: poll the watch's live value (the same
-     * lightweight read the official app uses) every minute while connected.
-     * Failures are ignored; a truly dropped link triggers cleanup, which
-     * cancels this job.
+     * lightweight read the official app uses) every [keepAliveInterval] (30s)
+     * while connected. Failures are ignored — a missed poll is not treated as a
+     * dropped link. The job is cancelled by cleanup() when the link goes down.
      */
     private fun startKeepAlive() {
         keepAliveJob?.cancel()

@@ -38,15 +38,6 @@ class OlleeRepository(val gatt: OlleeGattManager) {
     suspend fun liveValue(): Int =
         gatt.request(OlleeProtocol.CMD_LIVE).payload.beInt(2)
 
-    /**
-     * Fast liveness check: does the watch answer a real info read promptly? Used
-     * as a quick probe (short timeout, no retries) so a dead link is detected in
-     * ~2s rather than the ~30s a full retrying refresh would take.
-     */
-    suspend fun isResponsive(): Boolean =
-        runCatching { gatt.request(OlleeProtocol.CMD_INFO, timeoutMs = 2_000, retries = 0) }
-            .isSuccess
-
     /** Automatic sync: push the phone's current time + timezone to the watch. */
     suspend fun syncTime() = gatt.send(OlleeProtocol.setTimeFrame())
 
@@ -75,7 +66,15 @@ class OlleeRepository(val gatt: OlleeGattManager) {
                 if (++consecutiveMisses >= MAX_FETCH_MISSES) throw LinkDeadException(e)
             }
         }
-        runCatching { gatt.request(OlleeProtocol.CMD_SYNC_DONE, timeoutMs = 1_500) }
+        // Best-effort ack; don't fail the sync if it's missed (but do honour
+        // cancellation rather than swallowing it via runCatching).
+        try {
+            gatt.request(OlleeProtocol.CMD_SYNC_DONE, timeoutMs = 1_500)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // ignore
+        }
         return records
     }
 

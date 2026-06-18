@@ -67,8 +67,6 @@ data class UiState(
     val syncing: Boolean = false,
     val verifying: Boolean = false,
     val reconnecting: Boolean = false,
-    val temperatureLog: List<OlleeProtocol.Record> = emptyList(),
-    val hrLog: List<OlleeProtocol.Record> = emptyList(),
     val tempDaily: List<DailyTemp> = emptyList(),
     val hrDaily: List<DailyHr> = emptyList(),
     val stepDaily: List<DailyStep> = emptyList(),
@@ -89,13 +87,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("ollee_prefs", Context.MODE_PRIVATE)
     private val lastAddressKey = "last_address"
 
-    /** Address to connect to: last successfully connected watch, else default. */
-    val defaultAddress: String
-        get() = prefs.getString(lastAddressKey, null) ?: "00:80:E1:26:08:5D"
+    /** The last successfully connected watch, or null if none yet (scan first). */
+    val lastAddress: String?
+        get() = prefs.getString(lastAddressKey, null)
 
     private var pendingAddress: String? = null
     private var autoSyncJob: Job? = null
     private val autoSyncInterval = 60.minutes
+
+    private var scanJob: Job? = null
+    private val scanTimeout = 20.seconds
 
     /** True only when the user taps Disconnect, to suppress auto-reconnect. */
     private var userDisconnect = false
@@ -109,8 +110,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val syncMutex = Mutex()
     private var verifyJob: Job? = null
     private val verifyBudget = 60.seconds
-    private val probeAttempts = 4
-    private val probeRetryDelay = 1.5.seconds
+    // Set while a resume-driven reconnect is in progress, so startAutoSync skips
+    // its on-connect sync (this path syncs time+info itself, no records).
+    private var verifyDrivingReconnect = false
 
     /** Sanity ranges to reject corrupt/sentinel sensor records. */
     private val plausibleTempC = -40.0..85.0
@@ -143,7 +145,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             applyRecords(withContext(Dispatchers.IO) { store.loadAll() })
         }
         // On launch, auto-connect to the last successfully connected watch.
-        prefs.getString(lastAddressKey, null)?.let { connect(it) }
+        lastAddress?.let { connect(it) }
     }
 
     private val scanner get() =
@@ -167,10 +169,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _ui.update { it.copy(scanning = true, devices = emptyList()) }
         runCatching { scanner.startScan(scanCallback) }
             .onFailure { setMessage("Scan failed: ${it.message}") }
+        // Bound the scan: Android throttles long scans and they drain battery.
+        scanJob?.cancel()
+        scanJob = viewModelScope.launch {
+            delay(scanTimeout)
+            stopScan()
+        }
     }
 
     @SuppressLint("MissingPermission")
     fun stopScan() {
+        scanJob?.cancel()
+        scanJob = null
         runCatching { scanner.stopScan(scanCallback) }
         _ui.update { it.copy(scanning = false) }
     }
@@ -182,7 +192,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // Start the foreground service so the link survives backgrounding.
         OlleeConnectionService.start(getApplication())
         viewModelScope.launch {
-            runCatching { repo.connect(address) }
+            catching { repo.connect(address) }
                 .onFailure { setMessage("Connect failed: ${it.message}") }
         }
     }
@@ -202,7 +212,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun maybeAutoReconnect() {
         if (userDisconnect) return
-        val addr = prefs.getString(lastAddressKey, null) ?: return
+        val addr = lastAddress ?: return
         // Keep the watch screen up (with a banner) instead of flashing the
         // connect panel, but fall back to it if reconnection drags on.
         _ui.update { it.copy(reconnecting = true) }
@@ -224,12 +234,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * On returning to the foreground, block the UI with a "reconnecting…"
-     * overlay until the link is confirmed live AND a fresh sync completes — the
-     * silent few-second update was confusing. A stale ("zombie") link still
-     * reports READY but no longer answers, so we probe it; if it's dead we drop
-     * it and wait for auto-reconnect. If nothing comes back within
-     * [verifyBudget] (1 min) we kill the connection and show the connect screen.
+     * On returning to the foreground (notification tap or task switcher),
+     * reconnect *first* — bring up a fresh link before any syncing, so we never
+     * sync over a possibly-stale one — then push the time and refresh device
+     * info, blocking the UI with an overlay until it's done. Health records stay
+     * manual ("Sync health records"); only time + info sync here. Best-effort:
+     * if a fresh link can't be established within [verifyBudget] (1 min) we just
+     * drop the overlay and let auto-reconnect keep working.
      */
     fun verifyConnection() {
         if (repo.connectionState.value != ConnectionState.READY) return
@@ -237,65 +248,54 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         verifyJob = viewModelScope.launch {
             _ui.update { it.copy(verifying = true) }
             try {
-                // Best-effort: never tear the link down here. If it can't be
-                // confirmed in time, drop the overlay and let auto-reconnect keep
-                // working — don't dump the user to the connect screen and give up.
-                withTimeoutOrNull(verifyBudget) { verifyAndSync() }
+                withTimeoutOrNull(verifyBudget) { reconnectThenSync() }
             } finally {
                 _ui.update { it.copy(verifying = false) }
             }
         }
     }
 
-    /**
-     * On resume: confirm the link, refresh device info, and push the time only.
-     * The (heavier) health-records drain is left to a manual "Sync health
-     * records" tap — we don't want it running automatically on every return.
-     */
-    private suspend fun verifyAndSync() {
-        // Patient probe first: the watch is often briefly slow to answer right
-        // after waking, so don't drop a perfectly good link on the first miss.
-        if (!probe()) {
-            // Genuinely unresponsive: force a clean reconnect, then re-probe.
+    private suspend fun reconnectThenSync() {
+        // Drop the current link and wait for auto-reconnect to bring up a fresh
+        // one before syncing. verifyDrivingReconnect tells startAutoSync to skip
+        // its on-connect sync, keeping this path time+info only (no records).
+        verifyDrivingReconnect = true
+        try {
             repo.disconnect()
             repo.connectionState.first { it == ConnectionState.READY }
-            if (!probe()) return  // still nothing — leave it; auto-reconnect runs
+            tryRefresh()
+            catching { repo.syncTime() }
+        } finally {
+            verifyDrivingReconnect = false
         }
-        tryRefresh()
-        runCatching { repo.syncTime() }
-    }
-
-    /** A few quick liveness checks, allowing for a slow post-wake response. */
-    private suspend fun probe(): Boolean {
-        repeat(probeAttempts) {
-            if (repo.isResponsive()) return true
-            delay(probeRetryDelay)
-        }
-        return false
     }
 
     /**
-     * While connected, automatically sync time + device info + health records
-     * on connect and then every 60 minutes. Cancelled on disconnect.
+     * On a fresh connect, sync time + device info + health records, then repeat
+     * a full sync every 60 minutes while connected. A resume-driven reconnect
+     * skips the on-connect sync (reconnectThenSync handles time+info itself, and
+     * records stay manual on resume). Cancelled on disconnect.
      */
     private fun startAutoSync() {
         if (autoSyncJob?.isActive == true) return
+        // A resume-driven reconnect syncs time+info itself, so don't double up
+        // here (and don't drain records, which stay manual on resume).
+        val skipInitial = verifyDrivingReconnect
         autoSyncJob = viewModelScope.launch {
-            var first = true
-            while (isActive) {
+            if (!skipInitial) {
                 fullSync(announce = false)
-                if (first) {
-                    setMessage("Synced with watch.")
-                    first = false
-                }
+                setMessage("Synced with watch.")
+            }
+            while (isActive) {
                 delay(autoSyncInterval)
+                fullSync(announce = false)
             }
         }
     }
 
     /** One full pass: push time, refresh device info, drain records. */
     private suspend fun fullSync(announce: Boolean) {
-        runCatching { repo.syncTime() }
+        catching { repo.syncTime() }
         refreshInternal()
         // recover=false: this runs on autoSyncJob, which a reconnect would
         // cancel from under us. The periodic loop just retries next cycle.
@@ -320,10 +320,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * the link is genuinely alive, not just superficially connected.
      */
     private suspend fun tryRefresh(): Boolean {
-        val fw = runCatching { repo.firmware() }.getOrNull()
-        val goal = runCatching { repo.stepGoal() }.getOrNull()
-        val live = runCatching { repo.liveValue() }.getOrNull()
-        val nm = runCatching { repo.name() }.getOrNull()
+        val fw = catching { repo.firmware() }.getOrNull()
+        val goal = catching { repo.stepGoal() }.getOrNull()
+        val live = catching { repo.liveValue() }.getOrNull()
+        val nm = catching { repo.name() }.getOrNull()
         _ui.update {
             it.copy(
                 firmware = fw ?: it.firmware,
@@ -392,7 +392,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val today = stepDays.firstOrNull { it.dayEpoch == todayKey }?.steps ?: 0
         _ui.update {
             it.copy(
-                temperatureLog = temp, hrLog = hr,
                 tempDaily = dailyTemp(temp), hrDaily = dailyHr(hr),
                 stepDaily = stepDays, todaySteps = today,
             )
@@ -461,11 +460,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val msg = block()
                 if (msg.isNotEmpty()) setMessage(msg)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 setMessage("Error: ${e.message}")
             }
         }
     }
+
+    /** Like [runCatching], but never swallows coroutine cancellation. */
+    private inline fun <T> catching(block: () -> T): Result<T> =
+        try {
+            Result.success(block())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
 
     fun clearMessage() = _ui.update { it.copy(message = null) }
     private fun setMessage(m: String) = _ui.update { it.copy(message = m) }

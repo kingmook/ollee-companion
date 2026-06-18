@@ -255,17 +255,21 @@ private fun ConnectPanel(ui: UiState, vm: MainViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                Button(
-                    onClick = { vm.connect(vm.defaultAddress) },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Connect watch") }
+                // Only offer one-tap connect once we've paired with a watch
+                // before; a fresh install must scan and pick one.
+                vm.lastAddress?.let { addr ->
+                    Button(
+                        onClick = { vm.connect(addr) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Connect watch") }
+                }
                 OutlinedButton(
                     onClick = { if (ui.scanning) vm.stopScan() else vm.startScan() },
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text(if (ui.scanning) "Stop scan" else "Scan for devices") }
             }
             if (ui.devices.isNotEmpty()) {
-                Divider(Modifier.padding(vertical = 4.dp))
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
                 ui.devices.forEach { d ->
                     ListItem(
                         headlineContent = { Text(d.name) },
@@ -334,7 +338,7 @@ private fun StepsCard(ui: UiState) {
                 Text("%,d / %,d".format(today, goal), style = MaterialTheme.typography.titleMedium)
             }
             LinearProgressIndicator(
-                progress = fraction,
+                progress = { fraction },
                 modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)),
             )
             Text(
