@@ -15,6 +15,7 @@ import com.ollee.companion.ble.OlleeProtocol
 import com.ollee.companion.data.RecordStore
 import com.ollee.companion.feature.SunCalculator
 import com.ollee.companion.feature.SunTimes
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -102,6 +103,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val syncMutex = Mutex()
     private var verifyJob: Job? = null
     private val verifyBudget = 60.seconds
+    private val probeAttempts = 4
+    private val probeRetryDelay = 1.5.seconds
 
     /** Sanity ranges to reject corrupt/sentinel sensor records. */
     private val plausibleTempC = -40.0..85.0
@@ -213,31 +216,42 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (verifyJob?.isActive == true) return
         verifyJob = viewModelScope.launch {
             _ui.update { it.copy(verifying = true) }
-            val ok = withTimeoutOrNull(verifyBudget) { verifyAndSync() } ?: false
-            if (!ok) {
-                // Couldn't confirm a working link in time — tear it down.
-                userDisconnect = true
-                repo.disconnect()
-                OlleeConnectionService.stop(getApplication())
-                setMessage("Couldn't reach the watch — disconnected.")
+            try {
+                // Best-effort: never tear the link down here. If it can't be
+                // confirmed in time, drop the overlay and let auto-reconnect keep
+                // working — don't dump the user to the connect screen and give up.
+                withTimeoutOrNull(verifyBudget) { verifyAndSync() }
+            } finally {
+                _ui.update { it.copy(verifying = false) }
             }
-            _ui.update { it.copy(verifying = false) }
         }
     }
 
-    /** Probe the link (recovering a stale one), then run a full sync. */
-    private suspend fun verifyAndSync(): Boolean {
-        // The watch must answer a *real* query. A half-wedged link can still ACK
-        // the lightweight live poll while ignoring info/goal reads, so probe with
-        // the actual reads and treat "no real data" as a dead link.
-        if (!tryRefresh()) {
+    /**
+     * On resume: confirm the link, refresh device info, and push the time only.
+     * The (heavier) health-records drain is left to a manual "Sync health
+     * records" tap — we don't want it running automatically on every return.
+     */
+    private suspend fun verifyAndSync() {
+        // Patient probe first: the watch is often briefly slow to answer right
+        // after waking, so don't drop a perfectly good link on the first miss.
+        if (!probe()) {
+            // Genuinely unresponsive: force a clean reconnect, then re-probe.
             repo.disconnect()
             repo.connectionState.first { it == ConnectionState.READY }
-            if (!tryRefresh()) return false
+            if (!probe()) return  // still nothing — leave it; auto-reconnect runs
         }
+        tryRefresh()
         runCatching { repo.syncTime() }
-        doRecordsSync(announce = false)
-        return true
+    }
+
+    /** A few quick liveness checks, allowing for a slow post-wake response. */
+    private suspend fun probe(): Boolean {
+        repeat(probeAttempts) {
+            if (repo.isResponsive()) return true
+            delay(probeRetryDelay)
+        }
+        return false
     }
 
     /**
@@ -263,7 +277,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun fullSync(announce: Boolean) {
         runCatching { repo.syncTime() }
         refreshInternal()
-        doRecordsSync(announce)
+        // recover=false: this runs on autoSyncJob, which a reconnect would
+        // cancel from under us. The periodic loop just retries next cycle.
+        doRecordsSync(announce, recover = false)
     }
 
     private fun stopAutoSync() {
@@ -304,22 +320,41 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Drain the watch's log, merge into 30-day storage, and refresh history. */
     fun syncRecords() = viewModelScope.launch { doRecordsSync(announce = true) }
 
-    private suspend fun doRecordsSync(announce: Boolean) = syncMutex.withLock {
-        // Serialized (not skipped): a resume-verify must be able to await an
-        // already-running auto-sync rather than racing past it.
-        _ui.update { it.copy(syncing = true) }
-        try {
-            val recs = repo.syncRecords()
-            val all = withContext(Dispatchers.IO) { store.merge(recs) }
-            applyRecords(all)
-            if (announce) {
-                setMessage("Synced ${recs.size} records (${all.size} kept, 30 days).")
+    private suspend fun doRecordsSync(announce: Boolean, recover: Boolean = true) =
+        syncMutex.withLock {
+            // Serialized (not skipped): a resume-verify must be able to await an
+            // already-running auto-sync rather than racing past it.
+            _ui.update { it.copy(syncing = true) }
+            try {
+                val recs = try {
+                    repo.syncRecords()
+                } catch (e: Exception) {
+                    // The link may have gone stale in the background (it can
+                    // answer some commands while ignoring others). Force a clean
+                    // reconnect and try once more before giving up.
+                    if (recover && reconnectFresh()) repo.syncRecords() else throw e
+                }
+                val all = withContext(Dispatchers.IO) { store.merge(recs) }
+                applyRecords(all)
+                if (announce) {
+                    setMessage("Synced ${recs.size} records (${all.size} kept, 30 days).")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (announce) setMessage("Records sync failed: ${e.message}")
+            } finally {
+                _ui.update { it.copy(syncing = false) }
             }
-        } catch (e: Exception) {
-            if (announce) setMessage("Records sync failed: ${e.message}")
-        } finally {
-            _ui.update { it.copy(syncing = false) }
         }
+
+    /** Drop the link and wait for auto-reconnect to bring up a fresh one. */
+    private suspend fun reconnectFresh(): Boolean {
+        repo.disconnect()
+        return withTimeoutOrNull(verifyBudget) {
+            repo.connectionState.first { it == ConnectionState.READY }
+            true
+        } == true
     }
 
     /** Split stored records into per-type history and daily summaries. */
