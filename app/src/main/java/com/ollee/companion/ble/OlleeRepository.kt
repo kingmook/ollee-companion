@@ -22,17 +22,17 @@ class OlleeRepository(val gatt: OlleeGattManager) {
 
     /** Firmware / serial string, e.g. "DEADBEEF01.05.0000.01.07DEADBEEF". */
     suspend fun firmware(): String =
-        gatt.request(OlleeProtocol.CMD_INFO, timeoutMs = 3_000, retries = 2).payload
+        gatt.request(OlleeProtocol.CMD_INFO, timeoutMs = 3_000, retries = 1).payload
             .takeWhile { it.toInt() != 0 }.toByteArray()
             .toString(StandardCharsets.US_ASCII)
 
     suspend fun name(): String =
-        gatt.request(OlleeProtocol.CMD_NAME, timeoutMs = 3_000, retries = 2).payload
+        gatt.request(OlleeProtocol.CMD_NAME, timeoutMs = 3_000, retries = 1).payload
             .toString(StandardCharsets.US_ASCII).trim()
 
     /** Daily step goal (uint32, big-endian). */
     suspend fun stepGoal(): Int =
-        gatt.request(OlleeProtocol.CMD_STEP_GOAL, timeoutMs = 3_000, retries = 2).payload.beInt(4)
+        gatt.request(OlleeProtocol.CMD_STEP_GOAL, timeoutMs = 3_000, retries = 1).payload.beInt(4)
 
     /** Live value polled by the app (battery/steps — exact meaning TBD). */
     suspend fun liveValue(): Int =

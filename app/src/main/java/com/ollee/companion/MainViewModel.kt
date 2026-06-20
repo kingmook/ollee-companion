@@ -93,7 +93,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var pendingAddress: String? = null
     private var autoSyncJob: Job? = null
-    private val autoSyncInterval = 60.minutes
+    private val autoSyncInterval = 30.minutes
 
     private var scanJob: Job? = null
     private val scanTimeout = 20.seconds
@@ -110,9 +110,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val syncMutex = Mutex()
     private var verifyJob: Job? = null
     private val verifyBudget = 60.seconds
-    // Set while a resume-driven reconnect is in progress, so startAutoSync skips
-    // its on-connect sync (this path syncs time+info itself, no records).
-    private var verifyDrivingReconnect = false
+    // Cap the post-reconnect info+time sync so the overlay can't hang on a slow
+    // read (the reconnect itself is still bounded by verifyBudget).
+    private val syncPhaseBudget = 12.seconds
 
     /** Sanity ranges to reject corrupt/sentinel sensor records. */
     private val plausibleTempC = -40.0..85.0
@@ -257,35 +257,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun reconnectThenSync() {
         // Drop the current link and wait for auto-reconnect to bring up a fresh
-        // one before syncing. verifyDrivingReconnect tells startAutoSync to skip
-        // its on-connect sync, keeping this path time+info only (no records).
-        verifyDrivingReconnect = true
-        try {
-            repo.disconnect()
-            repo.connectionState.first { it == ConnectionState.READY }
+        // one before syncing. Only time + device info here — records stay manual
+        // (and never auto-drain on connect), so nothing contends these reads.
+        repo.disconnect()
+        repo.connectionState.first { it == ConnectionState.READY }
+        withTimeoutOrNull(syncPhaseBudget) {
             tryRefresh()
             catching { repo.syncTime() }
-        } finally {
-            verifyDrivingReconnect = false
         }
     }
 
     /**
-     * On a fresh connect, sync time + device info + health records, then repeat
-     * a full sync every 60 minutes while connected. A resume-driven reconnect
-     * skips the on-connect sync (reconnectThenSync handles time+info itself, and
-     * records stay manual on resume). Cancelled on disconnect.
+     * On connect, sync time + device info only, then drain health records on a
+     * 30-minute tick while connected. Records never auto-drain on connect — that
+     * would contend with (and starve) the info reads over the serialized GATT
+     * queue; they sync periodically and via the manual button. Cancelled on
+     * disconnect.
      */
     private fun startAutoSync() {
         if (autoSyncJob?.isActive == true) return
-        // A resume-driven reconnect syncs time+info itself, so don't double up
-        // here (and don't drain records, which stay manual on resume).
-        val skipInitial = verifyDrivingReconnect
         autoSyncJob = viewModelScope.launch {
-            if (!skipInitial) {
-                fullSync(announce = false)
-                setMessage("Synced with watch.")
-            }
+            catching { repo.syncTime() }
+            refreshInternal()
+            setMessage("Synced time with watch.")
             while (isActive) {
                 delay(autoSyncInterval)
                 fullSync(announce = false)
