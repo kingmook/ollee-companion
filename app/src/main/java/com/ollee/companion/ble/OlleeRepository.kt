@@ -45,8 +45,12 @@ class OlleeRepository(val gatt: OlleeGattManager) {
      * Drain the watch's health/activity log: ask for the count (0x27), fetch
      * each record (0x28), then acknowledge (0x2d). Returns steps, hourly
      * temperature, and heart-rate records.
+     *
+     * Runs with the keep-alive paused: a CMD_LIVE poll slipping between fetches
+     * wedges the watch so it stops answering 0x28, which is exactly the failure
+     * seen when a manual sync runs long enough to cross a poll boundary.
      */
-    suspend fun syncRecords(): List<OlleeProtocol.Record> {
+    suspend fun syncRecords(): List<OlleeProtocol.Record> = gatt.withoutKeepAlive {
         val count = countRecords().coerceIn(0, MAX_RECORDS)
         val records = ArrayList<OlleeProtocol.Record>(count)
         var consecutiveMisses = 0
@@ -75,7 +79,7 @@ class OlleeRepository(val gatt: OlleeGattManager) {
         } catch (e: Exception) {
             // ignore
         }
-        return records
+        records
     }
 
     /**

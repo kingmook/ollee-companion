@@ -62,6 +62,8 @@ class OlleeGattManager(private val context: Context) {
     private var keepAliveJob: Job? = null
     private val keepAliveInterval = 30.seconds
 
+    @Volatile private var keepAliveSuppressed = false
+
     private val callback = object : android.bluetooth.BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
@@ -181,6 +183,9 @@ class OlleeGattManager(private val context: Context) {
             while (isActive) {
                 delay(keepAliveInterval)
                 if (_state.value != ConnectionState.READY) break
+                // Don't poll mid records-drain — a CMD_LIVE between fetches can
+                // wedge the watch so it stops answering 0x28.
+                if (keepAliveSuppressed) continue
                 // Keep the link warm. A missed poll is NOT treated as a dead
                 // link — that caused false disconnects (and a jarring reconnect
                 // flash) on a merely-flaky poll. Genuine drops still arrive via
@@ -194,6 +199,19 @@ class OlleeGattManager(private val context: Context) {
     private fun stopKeepAlive() {
         keepAliveJob?.cancel()
         keepAliveJob = null
+    }
+
+    /**
+     * Run [block] with the keep-alive poll paused, so a CMD_LIVE can't slip
+     * between the requests inside (used to keep a records drain uninterrupted).
+     */
+    suspend fun <T> withoutKeepAlive(block: suspend () -> T): T {
+        keepAliveSuppressed = true
+        try {
+            return block()
+        } finally {
+            keepAliveSuppressed = false
+        }
     }
 
     /** Send a request and await the matching response (cmd + 0x20). */
