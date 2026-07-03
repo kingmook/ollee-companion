@@ -7,7 +7,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -31,6 +33,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
@@ -45,6 +54,8 @@ import com.ollee.companion.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.ceil
+import kotlin.math.floor
 
 class MainActivity : ComponentActivity() {
 
@@ -471,16 +482,14 @@ private fun HealthRecordsCard(ui: UiState, vm: MainViewModel) {
             if (ui.stepDaily.isEmpty()) {
                 MutedText("No data yet.")
             } else {
-                ui.stepDaily.forEach { d -> LogRow(d.label, "%,d steps".format(d.steps)) }
+                StepsChart(ui.stepDaily)
             }
         }
         RecordSection("Temperature", Icons.Filled.Thermostat) {
             if (ui.tempDaily.isEmpty()) {
                 MutedText("No data yet.")
             } else {
-                ui.tempDaily.forEach { d ->
-                    LogRow(d.label, "%.1f–%.1f °C".format(d.minC, d.maxC))
-                }
+                TempChart(ui.tempDaily)
             }
         }
         RecordSection("Heart rate", Icons.Filled.Favorite) {
@@ -529,6 +538,147 @@ private fun SyncButton(ui: UiState, vm: MainViewModel) {
         FilledTonalButton(onClick = { vm.syncRecords() }) { Text("Sync health records") }
     }
 }
+
+/** Days of history shown in the record charts. */
+private const val CHART_DAYS = 14
+
+/** Tap handler that maps a tap position to a bar index (same slot math as drawing). */
+private fun Modifier.tapChartBar(count: Int, onTap: (Int) -> Unit): Modifier =
+    pointerInput(count) {
+        val gap = 3.dp.toPx()
+        detectTapGestures { off ->
+            val w = (size.width - gap * (count - 1)) / count
+            onTap((off.x / (w + gap)).toInt().coerceIn(0, count - 1))
+        }
+    }
+
+/** Bar chart of daily step totals, oldest → newest. Tap a bar to see its value. */
+@Composable
+private fun StepsChart(days: List<DailyStep>) {
+    val data = remember(days) { days.sortedBy { it.dayEpoch }.takeLast(CHART_DAYS) }
+    val maxSteps = remember(data) { (data.maxOfOrNull { it.steps } ?: 0).coerceAtLeast(1) }
+    var selected by remember(data) { mutableStateOf<Int?>(null) }
+    val bar = MaterialTheme.colorScheme.primary
+    val barSelected = MaterialTheme.colorScheme.tertiary
+    val track = MaterialTheme.colorScheme.surfaceVariant
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            val sel = selected?.let { data.getOrNull(it) }
+            if (sel != null) {
+                Text(
+                    "${sel.label} · %,d steps".format(sel.steps),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            } else {
+                AxisLabel("0–%,d".format(maxSteps))
+            }
+            AxisLabel("steps / day")
+        }
+        Canvas(
+            Modifier.fillMaxWidth().height(110.dp)
+                .tapChartBar(data.size) { i -> selected = if (selected == i) null else i },
+        ) {
+            val n = data.size
+            val gap = 3.dp.toPx()
+            val w = (size.width - gap * (n - 1)) / n
+            val r = CornerRadius(w / 3f)
+            data.forEachIndexed { i, d ->
+                val x = i * (w + gap)
+                drawRoundRect(track, Offset(x, 0f), Size(w, size.height), r)
+                if (d.steps > 0) {
+                    val h = size.height * d.steps / maxSteps
+                    val color = if (i == selected) barSelected else bar
+                    drawRoundRect(color, Offset(x, size.height - h), Size(w, h), r)
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            AxisLabel(data.first().label)
+            AxisLabel(data.last().label)
+        }
+    }
+}
+
+/** Line chart of each day's average temperature, oldest → newest. Tap a point for its value. */
+@Composable
+private fun TempChart(days: List<DailyTemp>) {
+    val data = remember(days) { days.sortedBy { it.dayEpoch }.takeLast(CHART_DAYS) }
+    val lo = remember(data) { floor(data.minOf { it.avgC }) }
+    val hi = remember(data) { ceil(data.maxOf { it.avgC }).coerceAtLeast(lo + 1.0) }
+    var selected by remember(data) { mutableStateOf<Int?>(null) }
+    val line = MaterialTheme.colorScheme.tertiary
+    val dotSelected = MaterialTheme.colorScheme.primary
+    val grid = MaterialTheme.colorScheme.surfaceVariant
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            val sel = selected?.let { data.getOrNull(it) }
+            if (sel != null) {
+                Text(
+                    "${sel.label} · %.1f °C".format(sel.avgC),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            } else {
+                AxisLabel("%.0f–%.0f °C".format(lo, hi))
+            }
+            AxisLabel("avg °C / day")
+        }
+        Canvas(
+            Modifier.fillMaxWidth().height(110.dp)
+                .tapChartBar(data.size) { i -> selected = if (selected == i) null else i },
+        ) {
+            val n = data.size
+            val gap = 3.dp.toPx()
+            val w = (size.width - gap * (n - 1)) / n
+            val pad = 6.dp.toPx()  // keep dots at the extremes unclipped
+            val span = hi - lo
+            // Slot-centred x positions, so taps align with the steps chart's slots.
+            fun xAt(i: Int) = i * (w + gap) + w / 2f
+            fun yAt(i: Int) =
+                pad + ((hi - data[i].avgC) / span).toFloat() * (size.height - 2 * pad)
+            // Faint gridlines marking the scale bounds.
+            drawLine(grid, Offset(0f, pad), Offset(size.width, pad), 1.dp.toPx())
+            drawLine(
+                grid,
+                Offset(0f, size.height - pad), Offset(size.width, size.height - pad),
+                1.dp.toPx(),
+            )
+            if (n > 1) {
+                val path = Path().apply {
+                    moveTo(xAt(0), yAt(0))
+                    for (i in 1 until n) lineTo(xAt(i), yAt(i))
+                }
+                drawPath(
+                    path, line,
+                    style = Stroke(
+                        width = 2.dp.toPx(),
+                        cap = StrokeCap.Round, join = StrokeJoin.Round,
+                    ),
+                )
+            }
+            for (i in 0 until n) {
+                val isSel = i == selected
+                drawCircle(
+                    if (isSel) dotSelected else line,
+                    radius = if (isSel) 5.dp.toPx() else 3.dp.toPx(),
+                    center = Offset(xAt(i), yAt(i)),
+                )
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            AxisLabel(data.first().label)
+            AxisLabel(data.last().label)
+        }
+    }
+}
+
+@Composable
+private fun AxisLabel(text: String) = Text(
+    text,
+    style = MaterialTheme.typography.labelSmall,
+    color = MaterialTheme.colorScheme.onSurfaceVariant,
+)
 
 @Composable
 private fun LogRow(left: String, right: String) {

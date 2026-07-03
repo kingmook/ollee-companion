@@ -117,6 +117,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Sanity ranges to reject corrupt/sentinel sensor records. */
     private val plausibleTempC = -40.0..85.0
     private val plausibleBpm = 20..255
+    private val plausibleSteps = 0..50_000  // a single record's step count
 
     init {
         viewModelScope.launch {
@@ -380,7 +381,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val hr = all.filter {
             it.type == OlleeProtocol.REC_HEART_RATE && it.bpm in plausibleBpm
         }.sortedByDescending { it.tStart }
-        val steps = all.filter { it.type == OlleeProtocol.REC_STEPS }
+        val steps = all.filter {
+            it.type == OlleeProtocol.REC_STEPS && it.value in plausibleSteps
+        }
         val stepDays = dailySteps(steps)
         val todayKey = startOfLocalDay(System.currentTimeMillis() / 1000)
         val today = stepDays.firstOrNull { it.dayEpoch == todayKey }?.steps ?: 0
