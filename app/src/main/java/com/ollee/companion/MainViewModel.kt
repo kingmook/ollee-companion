@@ -283,18 +283,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             setMessage("Synced time with watch.")
             while (isActive) {
                 delay(autoSyncInterval)
-                fullSync(announce = false)
+                fullSync()
             }
         }
     }
 
-    /** One full pass: push time, refresh device info, drain records. */
-    private suspend fun fullSync(announce: Boolean) {
+    /** One silent full pass: push time, refresh device info, drain records. */
+    private suspend fun fullSync() {
         catching { repo.syncTime() }
         refreshInternal()
         // recover=false: this runs on autoSyncJob, which a reconnect would
         // cancel from under us. The periodic loop just retries next cycle.
-        doRecordsSync(announce, recover = false)
+        doRecordsSync(announce = false, recover = false)
     }
 
     private fun stopAutoSync() {

@@ -1,6 +1,6 @@
 # Ollee Companion (Android)
 
-I love the Ollee board drop-in replacement for classic casio watches. Unfortunately, 
+I love the Ollee board drop-in replacement for classic Casio watches. Unfortunately, 
 the official Android app doesn't work without play services (ie LineageOS devices). 
 
 This is a simple personal Android App to sync time, health info, and set alarms built with the help of Opus 4.8
@@ -14,7 +14,7 @@ the BLE protocol. It speaks the watch's custom framing over Nordic UART Service 
 This project was scaffolded outside Android Studio, so build it there:
 
 1. Open **Android Studio** (Hedgehog or newer) → *Open* this `ollee-android` folder.
-2. Let it **Gradle sync** (downloads Gradle 8.9 + AGP 8.5 + SDK 34; Studio's
+2. Let it **Gradle sync** (downloads Gradle 8.14 + AGP 8.5 + SDK 34; Studio's
    bundled JDK 17 is used automatically). If the Gradle wrapper jar is missing,
    Studio regenerates it during sync.
 3. Plug in an Android phone (USB debugging on) → **Run**.
@@ -32,10 +32,10 @@ This project was scaffolded outside Android Studio, so build it there:
 ble/
   OlleeProtocol.kt    frame build/parse, CRC-16/CCITT, set-time, reassembler
   OlleeGattManager.kt connect, notifications, serialized writes, request/response
-  OlleeRepository.kt  typed reads + writes; stubs for capture-pending features
+  OlleeRepository.kt  typed reads + writes over the request/response layer
 feature/
   SunCalculator.kt    on-phone sunrise/sunset (NOAA), fully working
-  Models.kt           Alarm/Flashlight/Sun data models
+  Models.kt           SunTimes data model
 MainViewModel.kt      scan, connect, auto-sync, UI state
 MainActivity.kt       Compose UI
 ```
@@ -43,7 +43,7 @@ MainActivity.kt       Compose UI
 ## Feature status
 
 | Feature | Status | To finish |
-|---|---|---|
+| --- | --- | --- |
 | Automatic time sync | ✅ Working (`0x23`) | — |
 | Step counter + daily goal | ✅ Read working | capture *goal-set* + *alert* |
 | Sunrise/Sunset by location | ✅ Working (on-phone GPS) | capture to push to watch face |
@@ -62,13 +62,13 @@ big-endian Unix-second timestamps), and `0x2d` acknowledges. Types: `0` steps
 
 Synced records are persisted on-device (`data/RecordStore.kt`, a deduplicated
 JSON store) and kept for a rolling **30 days**, so history accumulates across
-syncs even though the watch's own log is short-lived. The Temperature and Heart-
-rate cards show per-day summaries (daily low/high temperature, daily
-min/max/avg HR).
+syncs even though the watch's own log is short-lived. Steps and temperature are
+charted per day (14-day window, tap a bar/point for its value); heart rate
+shows per-day min/max/avg summaries.
 
-## Finishing a stubbed feature (the capture loop)
+## Decoding a new feature (the capture loop)
 
-Each stub in `OlleeRepository.kt` names the exact action to record. For any one:
+To add a watch feature whose command bytes aren't decoded yet:
 
 1. On the phone: enable *Developer options → Bluetooth HCI snoop log*, toggle
    Bluetooth off/on.

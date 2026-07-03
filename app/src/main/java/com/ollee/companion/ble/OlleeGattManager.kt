@@ -139,6 +139,11 @@ class OlleeGattManager(private val context: Context) {
 
     private fun handleNotify(value: ByteArray) {
         for (frame in reasm.feed(value)) {
+            // Drop corrupt frames instead of parsing them as data — a bad CRC
+            // accepted as a record is how garbage values (14854 °C, 1.5M-step
+            // days) get into storage. The pending request simply times out and
+            // retries against a clean reply.
+            if (!frame.crcOk) continue
             frames.tryEmit(frame)
             waiters.remove(frame.cmd)?.complete(frame)
         }

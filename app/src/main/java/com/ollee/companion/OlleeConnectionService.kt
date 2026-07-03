@@ -33,7 +33,7 @@ class OlleeConnectionService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        startForegroundCompat("Keeping your Ollee watch connected")
+        startForegroundCompat()
 
         // Mirror the connection state in the notification. The service is NOT
         // stopped on a dropped link — the ViewModel auto-reconnects, so we stay
@@ -60,8 +60,8 @@ class OlleeConnectionService : Service() {
         super.onDestroy()
     }
 
-    private fun startForegroundCompat(text: String) {
-        val notification = buildNotification(text)
+    private fun startForegroundCompat() {
+        val notification = buildNotification("Keeping your Ollee watch connected")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIF_ID, notification,
@@ -73,7 +73,7 @@ class OlleeConnectionService : Service() {
     }
 
     private fun updateNotification(text: String) {
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(NOTIF_ID, buildNotification(text))
     }
 
@@ -97,7 +97,7 @@ class OlleeConnectionService : Service() {
     }
 
     private fun createChannel() {
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID, "Watch connection", NotificationManager.IMPORTANCE_LOW,
