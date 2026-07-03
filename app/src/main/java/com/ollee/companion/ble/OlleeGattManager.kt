@@ -66,10 +66,17 @@ class OlleeGattManager(private val context: Context) {
 
     private val callback = object : android.bluetooth.BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            // Events from a stale client (a previous connection whose callback
+            // fires after a new connect started) must not touch current state;
+            // just make sure the zombie is fully closed so it can't keep
+            // auto-reconnecting in the background and steal the link.
+            if (gatt != null && g !== gatt) {
+                g.close()
+                return
+            }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 g.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                _state.value = ConnectionState.DISCONNECTED
                 readyDeferred?.takeIf { !it.isCompleted }
                     ?.completeExceptionally(IOException("disconnected (status=$status)"))
                 cleanup()
@@ -77,6 +84,11 @@ class OlleeGattManager(private val context: Context) {
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                readyDeferred?.takeIf { !it.isCompleted }
+                    ?.completeExceptionally(IOException("service discovery failed status=$status"))
+                return
+            }
             val tx = g.getService(OlleeProtocol.NUS_SERVICE)
                 ?.getCharacteristic(OlleeProtocol.NUS_TX)
             if (tx == null) {
@@ -89,11 +101,18 @@ class OlleeGattManager(private val context: Context) {
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
-            if (d.uuid == OlleeProtocol.CCCD) {
-                _state.value = ConnectionState.READY
-                readyDeferred?.takeIf { !it.isCompleted }?.complete(Unit)
-                startKeepAlive()
+            if (d.uuid != OlleeProtocol.CCCD) return
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                // Notifications never got enabled — the link would be connected
+                // but mute (every request times out). Fail the connect so the
+                // caller retries with a fresh link instead.
+                readyDeferred?.takeIf { !it.isCompleted }
+                    ?.completeExceptionally(IOException("enable notifications failed status=$status"))
+                return
             }
+            _state.value = ConnectionState.READY
+            readyDeferred?.takeIf { !it.isCompleted }?.complete(Unit)
+            startKeepAlive()
         }
 
         override fun onCharacteristicWrite(
@@ -143,6 +162,9 @@ class OlleeGattManager(private val context: Context) {
         readyDeferred = ready
         gatt = device.connectGatt(context, true, callback, BluetoothDevice.TRANSPORT_LE)
         try {
+            // connectGatt returns null when the adapter is off — fail fast
+            // instead of burning the whole search window.
+            if (gatt == null) throw IOException("connectGatt failed (is Bluetooth on?)")
             if (withTimeoutOrNull(timeoutMs.milliseconds) { ready.await() } == null) {
                 throw IOException("no watch found within ${timeoutMs / 1000}s")
             }
@@ -155,12 +177,18 @@ class OlleeGattManager(private val context: Context) {
 
     fun disconnect() {
         gatt?.disconnect()
-        gatt?.close()
         cleanup()
     }
 
     private fun cleanup() {
         stopKeepAlive()
+        // Always close(), on every teardown path. An unclosed BluetoothGatt
+        // holds one of the system's ~32 GATT client slots and — because we
+        // connect with autoConnect=true — keeps reconnecting in the background
+        // as a zombie client that races (and corrupts) the next connection.
+        // Leaking one per background drop eventually exhausts the slots and
+        // connectGatt starts failing outright.
+        gatt?.close()
         gatt = null
         waiters.values.forEach { it.takeIf { d -> !d.isCompleted }
             ?.completeExceptionally(IOException("disconnected")) }
@@ -202,14 +230,22 @@ class OlleeGattManager(private val context: Context) {
     }
 
     /**
-     * Run [block] with the keep-alive poll paused, so a CMD_LIVE can't slip
-     * between the requests inside (used to keep a records drain uninterrupted).
+     * Run [block] as an uninterrupted burst:
+     *  - the keep-alive poll is paused, so a CMD_LIVE can't slip between the
+     *    requests inside (it wedges a records drain), and
+     *  - the connection is bumped to high priority (short connection interval)
+     *    for the duration. Watches negotiate long intervals to save power, and
+     *    each request is a full write-with-response round trip — at a long
+     *    interval a records drain crawls and trips fetch timeouts.
+     * Both are restored on exit.
      */
-    suspend fun <T> withoutKeepAlive(block: suspend () -> T): T {
+    suspend fun <T> burst(block: suspend () -> T): T {
         keepAliveSuppressed = true
+        gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
         try {
             return block()
         } finally {
+            gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
             keepAliveSuppressed = false
         }
     }
@@ -247,7 +283,14 @@ class OlleeGattManager(private val context: Context) {
             val done = CompletableDeferred<Unit>()
             pendingWrite = done
             writeCharacteristicCompat(g, rx, piece)
-            withTimeout(3_000.milliseconds) { done.await() }
+            try {
+                withTimeout(3_000.milliseconds) { done.await() }
+            } finally {
+                // On timeout, don't leave the stale deferred registered — a
+                // late ack for THIS write must not complete the NEXT chunk's
+                // deferred (that would interleave frame bytes on the wire).
+                if (pendingWrite === done) pendingWrite = null
+            }
         }
     }
 
