@@ -64,7 +64,7 @@ object OlleeProtocol {
         if (payload.size < 16) return null
         fun be(off: Int): Long {
             var v = 0L
-            for (i in off until off + 4) v = (v shl 8) or (payload[i].toLong() and 0xFF)
+            for (i in off until (off + 4)) v = (v shl 8) or (payload[i].toLong() and 0xFF)
             return v
         }
         return Record(be(0).toInt(), be(4), be(8), be(12).toInt())
@@ -89,7 +89,7 @@ object OlleeProtocol {
         val crc = crc16(body)
         val after = byteArrayOf(
             0xAA.toByte(), 0x55.toByte(),
-            ((crc shr 8) and 0xFF).toByte(), (crc and 0xFF).toByte()
+            ((crc shr 8) and 0xFF).toByte(), (crc and 0xFF).toByte(),
         ) + body
         val len = after.size
         return byteArrayOf(((len shr 8) and 0xFF).toByte(), (len and 0xFF).toByte()) + after
@@ -97,7 +97,7 @@ object OlleeProtocol {
 
     /** Split a frame into <=20-byte BLE writes; the watch reassembles by length. */
     fun chunk(frame: ByteArray, size: Int = 20): List<ByteArray> =
-        frame.toList().chunked(size).map { it.toByteArray() }
+        frame.toList().asSequence().chunked(size).map { it.toByteArray() }.toList()
 
     /**
      * Build a set-time (0x23) frame: LE unix timestamp + LE timezone offset,

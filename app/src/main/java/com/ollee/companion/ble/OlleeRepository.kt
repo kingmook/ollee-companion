@@ -77,7 +77,7 @@ class OlleeRepository(val gatt: OlleeGattManager) {
             gatt.request(OlleeProtocol.CMD_SYNC_DONE, timeoutMs = 1_500)
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             // ignore
         }
         records

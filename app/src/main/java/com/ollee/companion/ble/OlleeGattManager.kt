@@ -70,7 +70,7 @@ class OlleeGattManager(private val context: Context) {
             // fires after a new connect started) must not touch current state;
             // just make sure the zombie is fully closed so it can't keep
             // auto-reconnecting in the background and steal the link.
-            if (gatt != null && g !== gatt) {
+            if ((gatt != null) && (g !== gatt)) {
                 g.close()
                 return
             }
@@ -116,7 +116,7 @@ class OlleeGattManager(private val context: Context) {
         }
 
         override fun onCharacteristicWrite(
-            g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int
+            g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int,
         ) {
             val d = pendingWrite
             pendingWrite = null
@@ -126,7 +126,7 @@ class OlleeGattManager(private val context: Context) {
 
         // Android 13+ (API 33) value-carrying callback.
         override fun onCharacteristicChanged(
-            g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray
+            g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray,
         ) = handleNotify(value)
 
         // Legacy callback for API <= 32.
@@ -247,8 +247,8 @@ class OlleeGattManager(private val context: Context) {
     suspend fun <T> burst(block: suspend () -> T): T {
         keepAliveSuppressed = true
         gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-        try {
-            return block()
+        return try {
+            block()
         } finally {
             gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
             keepAliveSuppressed = false
@@ -267,8 +267,7 @@ class OlleeGattManager(private val context: Context) {
             val deferred = CompletableDeferred<OlleeProtocol.Frame>()
             waiters[respCmd] = deferred
             writeFrame(frame)
-            val result = withTimeoutOrNull(timeoutMs.milliseconds) { deferred.await() }
-            if (result != null) return@withLock result
+            withTimeoutOrNull(timeoutMs.milliseconds) { deferred.await() }?.let { return@withLock it }
             waiters.remove(respCmd)
             lastError = IOException("no reply to cmd 0x${cmd.toString(16)}")
         }

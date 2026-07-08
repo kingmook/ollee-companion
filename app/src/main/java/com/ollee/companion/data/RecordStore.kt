@@ -29,10 +29,10 @@ class RecordStore(context: Context, private val retentionDays: Int = 30) {
     /** Merge new records in, prune anything older than the window, persist, return all. */
     @Synchronized
     fun merge(newRecords: List<OlleeProtocol.Record>): List<OlleeProtocol.Record> {
-        val cutoff = System.currentTimeMillis() / 1000 - retentionDays * 86_400L
+        val cutoff = (System.currentTimeMillis() / 1000) - (retentionDays * 86_400L)
         val byKey = LinkedHashMap<String, OlleeProtocol.Record>()
         for (r in loadAll() + newRecords) {
-            if (r.tStart < cutoff || r.tStart <= 0) continue
+            if ((r.tStart < cutoff) || (r.tStart <= 0)) continue
             byKey[key(r)] = r
         }
         val merged = byKey.values.sortedByDescending { it.tStart }
@@ -48,7 +48,7 @@ class RecordStore(context: Context, private val retentionDays: Int = 30) {
             arr.put(
                 JSONObject()
                     .put("t", r.type).put("s", r.tStart)
-                    .put("e", r.tEnd).put("v", r.value)
+                    .put("e", r.tEnd).put("v", r.value),
             )
         }
         return arr.toString()
@@ -61,8 +61,8 @@ class RecordStore(context: Context, private val retentionDays: Int = 30) {
             val o = arr.getJSONObject(i)
             out.add(
                 OlleeProtocol.Record(
-                    o.getInt("t"), o.getLong("s"), o.getLong("e"), o.getInt("v")
-                )
+                    o.getInt("t"), o.getLong("s"), o.getLong("e"), o.getInt("v"),
+                ),
             )
         }
         return out

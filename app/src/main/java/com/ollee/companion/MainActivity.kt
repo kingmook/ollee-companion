@@ -22,7 +22,7 @@ import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BluetoothDisabled
-import androidx.compose.material.icons.filled.DirectionsWalk
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sync
@@ -346,7 +346,7 @@ private fun StepsCard(ui: UiState) {
     ElevatedCard {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.DirectionsWalk, null, tint = MaterialTheme.colorScheme.primary)
+                Icon(Icons.AutoMirrored.Filled.DirectionsWalk, null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(8.dp))
                 Text("Steps today", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.weight(1f))
@@ -482,7 +482,7 @@ private fun TimeSyncCard(vm: MainViewModel, modifier: Modifier = Modifier) {
 @Composable
 private fun HealthRecordsCard(ui: UiState, vm: MainViewModel) {
     FeatureCard("Health records", Icons.Filled.Favorite) {
-        RecordSection("Steps", Icons.Filled.DirectionsWalk) {
+        RecordSection("Steps", Icons.AutoMirrored.Filled.DirectionsWalk) {
             if (ui.stepDaily.isEmpty()) {
                 MutedText("No data yet.")
             } else {

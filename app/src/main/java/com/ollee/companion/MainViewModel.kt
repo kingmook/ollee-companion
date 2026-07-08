@@ -227,7 +227,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             delay(reconnectDelay)
             if (!userDisconnect &&
-                repo.connectionState.value == ConnectionState.DISCONNECTED
+                (repo.connectionState.value == ConnectionState.DISCONNECTED)
             ) {
                 connect(addr)
             }
@@ -327,7 +327,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 name = nm ?: it.name,
             )
         }
-        return fw != null || goal != null
+        return (fw != null) || (goal != null)
     }
 
     fun syncTimeNow() = action { repo.syncTime(); "Time synced." }
@@ -375,15 +375,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun applyRecords(all: List<OlleeProtocol.Record>) {
         // Drop physically-impossible readings (corrupt/sentinel records) so a
         // single garbage value can't skew a day's min/max (e.g. 14854 °C).
-        val temp = all.filter {
-            it.type == OlleeProtocol.REC_TEMPERATURE && it.celsius in plausibleTempC
-        }.sortedByDescending { it.tStart }
-        val hr = all.filter {
-            it.type == OlleeProtocol.REC_HEART_RATE && it.bpm in plausibleBpm
-        }.sortedByDescending { it.tStart }
-        val steps = all.filter {
-            it.type == OlleeProtocol.REC_STEPS && it.value in plausibleSteps
-        }
+        val temp = all.asSequence().filter {
+            (it.type == OlleeProtocol.REC_TEMPERATURE) && (it.celsius in plausibleTempC)
+        }.sortedByDescending { it.tStart }.toList()
+        val hr = all.asSequence().filter {
+            (it.type == OlleeProtocol.REC_HEART_RATE) && (it.bpm in plausibleBpm)
+        }.sortedByDescending { it.tStart }.toList()
+        val steps = all.asSequence().filter {
+            (it.type == OlleeProtocol.REC_STEPS) && (it.value in plausibleSteps)
+        }.toList()
         val stepDays = dailySteps(steps)
         val todayKey = startOfLocalDay(System.currentTimeMillis() / 1000)
         val today = stepDays.firstOrNull { it.dayEpoch == todayKey }?.steps ?: 0
@@ -397,35 +397,47 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun dailyTemp(list: List<OlleeProtocol.Record>): List<DailyTemp> =
         list.groupBy { startOfLocalDay(it.tStart) }
+            .asSequence()
             .map { (day, recs) ->
                 val c = recs.map { it.celsius }
                 DailyTemp(dayFmt.format(Date(day * 1000)), day, c.min(), c.max(), c.average())
             }
             .sortedByDescending { it.dayEpoch }
+            .toList()
 
     private fun dailyHr(list: List<OlleeProtocol.Record>): List<DailyHr> =
         list.groupBy { startOfLocalDay(it.tStart) }
+            .asSequence()
             .map { (day, recs) ->
                 val b = recs.map { it.bpm }
-                DailyHr(dayFmt.format(Date(day * 1000)), day,
-                    b.min(), b.max(), b.average().toInt(), b.size)
+                DailyHr(
+                    dayFmt.format(Date(day * 1000)),
+                    day,
+                    b.min(),
+                    b.max(),
+                    b.average().toInt(),
+                    b.size,
+                )
             }
             .sortedByDescending { it.dayEpoch }
+            .toList()
 
     private fun dailySteps(list: List<OlleeProtocol.Record>): List<DailyStep> =
         list.groupBy { startOfLocalDay(it.tStart) }
+            .asSequence()
             .map { (day, recs) ->
                 DailyStep(dayFmt.format(Date(day * 1000)), day, recs.sumOf { it.value })
             }
             .sortedByDescending { it.dayEpoch }
+            .toList()
 
     private fun startOfLocalDay(epochSec: Long): Long {
         val cal = Calendar.getInstance()
         cal.timeInMillis = epochSec * 1000
-        cal.set(Calendar.HOUR_OF_DAY, 0)
-        cal.set(Calendar.MINUTE, 0)
-        cal.set(Calendar.SECOND, 0)
-        cal.set(Calendar.MILLISECOND, 0)
+        cal[Calendar.HOUR_OF_DAY] = 0
+        cal[Calendar.MINUTE] = 0
+        cal[Calendar.SECOND] = 0
+        cal[Calendar.MILLISECOND] = 0
         return cal.timeInMillis / 1000
     }
 

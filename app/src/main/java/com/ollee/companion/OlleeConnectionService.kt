@@ -47,7 +47,7 @@ class OlleeConnectionService : Service() {
                         ConnectionState.CONNECTING -> "Searching for your Ollee watch…"
                         ConnectionState.READY -> "Connected to your Ollee watch"
                         ConnectionState.DISCONNECTED -> "Reconnecting to your Ollee watch…"
-                    }
+                    },
                 )
             }
         }
