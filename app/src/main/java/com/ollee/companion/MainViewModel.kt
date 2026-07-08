@@ -160,7 +160,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val dev = ScannedDevice(name, result.device.address)
             _ui.update { s ->
                 if (s.devices.any { it.address == dev.address }) s
-                else s.copy(devices = s.devices + dev)
+                else {
+                    val newList = (s.devices + dev).sortedWith(
+                        compareByDescending<ScannedDevice> {
+                            it.name.contains("ollee", ignoreCase = true)
+                        }.thenBy {
+                            it.name == "(unknown)"
+                        }.thenBy { it.name },
+                    )
+                    s.copy(devices = newList)
+                }
             }
         }
     }
