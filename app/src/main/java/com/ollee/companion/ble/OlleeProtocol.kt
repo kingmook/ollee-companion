@@ -34,12 +34,16 @@ object OlleeProtocol {
 
     // --- Known request command codes (response = code + 0x20) ---------------
     const val CMD_INFO = 0x2A        // firmware / serial string
+    @Suppress("unused")
     const val CMD_STATUS = 0x2B      // status block
     const val CMD_SET_TIME = 0x23    // set clock: LE unix ts + tz offset
     const val CMD_SET_ALARM = 0x25   // set/update alarm (-> 0x45 ack)
     const val CMD_STEP_GOAL = 0x30   // daily step goal
+    @Suppress("unused")
     const val CMD_SETTINGS = 0x32    // settings incl. backlight RGB
+    @Suppress("unused")
     const val CMD_WEEKDAYS = 0x35    // weekday label string
+    @Suppress("unused")
     const val CMD_FEATURES = 0x37    // capability/feature table
     const val CMD_LIVE = 0x39        // live value (battery/steps) polled
     const val CMD_NAME = 0x2E        // name tag string
@@ -76,7 +80,7 @@ object OlleeProtocol {
         for (b in data) {
             crc = crc xor ((b.toInt() and 0xFF) shl 8)
             repeat(8) {
-                crc = if (crc and 0x8000 != 0) ((crc shl 1) xor 0x1021) and 0xFFFF
+                crc = if ((crc and 0x8000) != 0) ((crc shl 1) xor 0x1021) and 0xFFFF
                 else (crc shl 1) and 0xFFFF
             }
         }
@@ -97,7 +101,7 @@ object OlleeProtocol {
 
     /** Split a frame into <=20-byte BLE writes; the watch reassembles by length. */
     fun chunk(frame: ByteArray, size: Int = 20): List<ByteArray> =
-        frame.toList().asSequence().chunked(size).map { it.toByteArray() }.toList()
+        frame.asSequence().chunked(size).map { it.toByteArray() }.toList()
 
     /**
      * Build a set-time (0x23) frame: LE unix timestamp + LE timezone offset,
@@ -108,7 +112,7 @@ object OlleeProtocol {
      */
     fun setTimeFrame(
         epochSeconds: Long = System.currentTimeMillis() / 1000,
-        tzOffsetSeconds: Int = TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000
+        tzOffsetSeconds: Int = TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000,
     ): ByteArray {
         val p = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
         p.putInt((epochSeconds and 0xFFFFFFFFL).toInt())
@@ -133,22 +137,24 @@ object OlleeProtocol {
 
     class Frame(
         val cmd: Int,
+        @Suppress("unused")
         val type: Int,
         val payload: ByteArray,
         val crcOk: Boolean,
-        val raw: ByteArray
+        @Suppress("unused")
+        val raw: ByteArray,
     )
 
     /** Validate magic + CRC and split a complete frame into fields. */
     fun decode(frame: ByteArray): Frame? {
         if (frame.size < 8) return null
-        if (frame[2] != 0xAA.toByte() || frame[3] != 0x55.toByte()) return null
+        if ((frame[2] != 0xAA.toByte()) || (frame[3] != 0x55.toByte())) return null
         val len = ((frame[0].toInt() and 0xFF) shl 8) or (frame[1].toInt() and 0xFF)
         val after = frame.copyOfRange(2, minOf(frame.size, 2 + len))
         if (after.size < 4) return null
         val crcRx = ((after[2].toInt() and 0xFF) shl 8) or (after[3].toInt() and 0xFF)
         val body = after.copyOfRange(4, after.size)
-        val crcOk = body.size >= 2 && crc16(body) == crcRx
+        val crcOk = (body.size >= 2) && (crc16(body) == crcRx)
         val type = if (body.isNotEmpty()) body[0].toInt() and 0xFF else -1
         val cmd = if (body.size >= 2) body[1].toInt() and 0xFF else -1
         val payload = if (body.size > 2) body.copyOfRange(2, body.size) else ByteArray(0)

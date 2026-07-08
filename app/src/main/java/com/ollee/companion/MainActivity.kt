@@ -148,7 +148,7 @@ fun OlleeScreen(vm: MainViewModel = viewModel()) {
             Spacer(Modifier.height(2.dp))
             // Keep the watch screen up during a brief auto-reconnect rather than
             // flashing the connect panel; show a small banner instead.
-            if (ui.connection == ConnectionState.READY || ui.reconnecting) {
+            if ((ui.connection == ConnectionState.READY) || ui.reconnecting) {
                 if (ui.connection != ConnectionState.READY) ReconnectingBanner()
                 WatchSummary(ui, vm)
                 StepsCard(ui)
@@ -393,16 +393,17 @@ private fun AlarmCard(vm: MainViewModel) {
                     label = label,
                     selected = days[i],
                     modifier = Modifier.weight(1f),
-                    onToggle = { days[i] = !days[i] },
-                )
+                ) { days[i] = !days[i] }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
-                var mask = 0
-                days.forEachIndexed { i, on -> if (on) mask = mask or (1 shl i) }
-                vm.setAlarm(hour, minute, mask)
-            }) { Text("Set alarm") }
+            Button(
+                onClick = {
+                    var mask = 0
+                    days.forEachIndexed { i, on -> if (on) mask = mask or (1 shl i) }
+                    vm.setAlarm(hour, minute, mask)
+                },
+            ) { Text("Set alarm") }
             OutlinedButton(onClick = { vm.clearAlarm() }) { Text("Clear") }
         }
     }
@@ -551,7 +552,7 @@ private fun Modifier.tapChartBar(count: Int, onTap: (Int) -> Unit): Modifier =
     pointerInput(count) {
         val gap = 3.dp.toPx()
         detectTapGestures { off ->
-            val w = (size.width - gap * (count - 1)) / count
+            val w = (size.width - (gap * (count - 1))) / count
             onTap((off.x / (w + gap)).toInt().coerceIn(0, count - 1))
         }
     }
@@ -585,13 +586,13 @@ private fun StepsChart(days: List<DailyStep>) {
         ) {
             val n = data.size
             val gap = 3.dp.toPx()
-            val w = (size.width - gap * (n - 1)) / n
+            val w = (size.width - (gap * (n - 1))) / n
             val r = CornerRadius(w / 3f)
             data.forEachIndexed { i, d ->
                 val x = i * (w + gap)
                 drawRoundRect(track, Offset(x, 0f), Size(w, size.height), r)
                 if (d.steps > 0) {
-                    val h = size.height * d.steps / maxSteps
+                    val h = (size.height * d.steps) / maxSteps
                     val color = if (i == selected) barSelected else bar
                     drawRoundRect(color, Offset(x, size.height - h), Size(w, h), r)
                 }
@@ -634,13 +635,13 @@ private fun TempChart(days: List<DailyTemp>) {
         ) {
             val n = data.size
             val gap = 3.dp.toPx()
-            val w = (size.width - gap * (n - 1)) / n
+            val w = (size.width - (gap * (n - 1))) / n
             val pad = 6.dp.toPx()  // keep dots at the extremes unclipped
             val span = hi - lo
             // Slot-centred x positions, so taps align with the steps chart's slots.
-            fun xAt(i: Int) = i * (w + gap) + w / 2f
+            fun xAt(i: Int) = (i * (w + gap)) + (w / 2f)
             fun yAt(i: Int) =
-                pad + ((hi - data[i].avgC) / span).toFloat() * (size.height - 2 * pad)
+                pad + (((hi - data[i].avgC) / span).toFloat() * (size.height - (2 * pad)))
             // Faint gridlines marking the scale bounds.
             drawLine(grid, Offset(0f, pad), Offset(size.width, pad), 1.dp.toPx())
             drawLine(
@@ -687,8 +688,11 @@ private fun AxisLabel(text: String) = Text(
 @Composable
 private fun LogRow(left: String, right: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(left, style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            left,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Text(right, style = MaterialTheme.typography.bodySmall)
     }
 }

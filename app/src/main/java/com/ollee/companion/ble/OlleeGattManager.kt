@@ -258,7 +258,7 @@ class OlleeGattManager(private val context: Context) {
     /** Send a request and await the matching response (cmd + 0x20). */
     suspend fun request(
         cmd: Int, payload: ByteArray = ByteArray(0),
-        timeoutMs: Long = 2_000, retries: Int = 1
+        timeoutMs: Long = 2_000, retries: Int = 1,
     ): OlleeProtocol.Frame = requestMutex.withLock {
         val respCmd = cmd + OlleeProtocol.RESP_OFFSET
         val frame = OlleeProtocol.buildFrame(cmd, payload)
