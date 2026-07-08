@@ -195,14 +195,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _ui.update { it.copy(scanning = false) }
     }
 
-    fun connect(address: String) {
+    fun connect(address: String, autoConnect: Boolean = false) {
         userDisconnect = false
         pendingAddress = address
         stopScan()
         // Start the foreground service so the link survives backgrounding.
         OlleeConnectionService.start(getApplication())
         viewModelScope.launch {
-            catching { repo.connect(address) }
+            catching { repo.connect(address, autoConnect) }
                 .onFailure { setMessage("Connect failed: ${it.message}") }
         }
     }
@@ -238,7 +238,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (!userDisconnect &&
                 (repo.connectionState.value == ConnectionState.DISCONNECTED)
             ) {
-                connect(addr)
+                // Background reconnection uses autoConnect=true so the OS keeps
+                // looking at low power until the watch is in range.
+                connect(addr, autoConnect = true)
             }
         }
     }
@@ -266,10 +268,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun reconnectThenSync() {
-        // Drop the current link and wait for auto-reconnect to bring up a fresh
-        // one before syncing. Only time + device info here — records stay manual
-        // (and never auto-drain on connect), so nothing contends these reads.
+        // Try a quick refresh first. If the link is still alive (responsive),
+        // we're done instantly.
+        if (tryRefresh()) {
+            catching { repo.syncTime() }
+            return
+        }
+        // If the link is stale, drop it and reconnect immediately using a fast
+        // direct connection (autoConnect=false) to avoid the 3s auto-delay.
         repo.disconnect()
+        connect(lastAddress ?: return, autoConnect = false)
         repo.connectionState.first { it == ConnectionState.READY }
         withTimeoutOrNull(syncPhaseBudget) {
             tryRefresh()
