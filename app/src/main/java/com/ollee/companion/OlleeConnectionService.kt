@@ -10,13 +10,18 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.content.ContextCompat
 import com.ollee.companion.ble.ConnectionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Foreground service (type connectedDevice) that keeps the process alive while
@@ -27,18 +32,22 @@ import kotlinx.coroutines.launch
 class OlleeConnectionService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var reconnectJob: Job? = null
+    private val reconnectDelay = 3.seconds
+
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
+        acquireWakeLock()
         createChannel()
         startForegroundCompat()
 
-        // Mirror the connection state in the notification. The service is NOT
-        // stopped on a dropped link — the ViewModel auto-reconnects, so we stay
-        // foreground through transient drops. It is stopped explicitly via
-        // stop() only when the user taps Disconnect.
+        // Mirror the connection state in the notification and handle background
+        // auto-reconnect. The service stays up through transient drops; it is
+        // stopped explicitly via stop() only when the user taps Disconnect.
         val repo = (application as OlleeApp).repository
         scope.launch {
             repo.connectionState.collect { state ->
@@ -49,6 +58,26 @@ class OlleeConnectionService : Service() {
                         ConnectionState.DISCONNECTED -> "Reconnecting to your Ollee watch…"
                     },
                 )
+                if (state == ConnectionState.DISCONNECTED) {
+                    scheduleReconnect()
+                } else {
+                    reconnectJob?.cancel()
+                }
+            }
+        }
+    }
+
+    private fun scheduleReconnect() {
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            delay(reconnectDelay)
+            val prefs = getSharedPreferences("ollee_prefs", MODE_PRIVATE)
+            val addr = prefs.getString("last_address", null) ?: return@launch
+            val repo = (application as OlleeApp).repository
+            // Background reconnection uses autoConnect=true so the OS keeps
+            // looking at low power until the watch is in range.
+            if (repo.connectionState.value == ConnectionState.DISCONNECTED) {
+                runCatching { repo.connect(addr, autoConnect = true) }
             }
         }
     }
@@ -57,7 +86,19 @@ class OlleeConnectionService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
+        releaseWakeLock()
         super.onDestroy()
+    }
+
+    private fun acquireWakeLock() {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Ollee:ConnectionService")
+            .apply { acquire(10.minutes.inWholeMilliseconds) }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.takeIf { it.isHeld }?.release()
+        wakeLock = null
     }
 
     private fun startForegroundCompat() {

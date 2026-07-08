@@ -100,7 +100,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** True only when the user taps Disconnect, to suppress auto-reconnect. */
     private var userDisconnect = false
-    private val reconnectDelay = 3.seconds
     private var reconnectingClearJob: Job? = null
     // How long to keep the watch screen up (with a "Reconnecting…" banner)
     // during an auto-reconnect before falling back to the connect panel.
@@ -222,7 +221,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun maybeAutoReconnect() {
         if (userDisconnect) return
-        val addr = lastAddress ?: return
+        if (lastAddress == null) return
         // Keep the watch screen up (with a banner) instead of flashing the
         // connect panel, but fall back to it if reconnection drags on.
         _ui.update { it.copy(reconnecting = true) }
@@ -233,16 +232,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _ui.update { it.copy(reconnecting = false) }
             }
         }
-        viewModelScope.launch {
-            delay(reconnectDelay)
-            if (!userDisconnect &&
-                (repo.connectionState.value == ConnectionState.DISCONNECTED)
-            ) {
-                // Background reconnection uses autoConnect=true so the OS keeps
-                // looking at low power until the watch is in range.
-                connect(addr, autoConnect = true)
-            }
-        }
+        // The actual reconnection loop is handled by OlleeConnectionService
+        // while it is running, to ensure persistence even if the app is
+        // backgrounded/swiped away.
     }
 
     /**

@@ -60,7 +60,7 @@ class OlleeGattManager(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var keepAliveJob: Job? = null
-    private val keepAliveInterval = 30.seconds
+    private val keepAliveInterval = 15.seconds
 
     @Volatile private var keepAliveSuppressed = false
 
@@ -151,11 +151,11 @@ class OlleeGattManager(private val context: Context) {
 
     /**
      * Connect to a known device by MAC and wait until READY, searching for up
-     * up to [timeoutMs] (default 1 minute). autoConnect=true lets the OS keep
+     * up to [timeoutMs] (default 2 minutes). autoConnect=true lets the OS keep
      * looking until the watch appears within the window. On timeout or failure
      * the state is reset to DISCONNECTED so the UI shows "Connect watch" again.
      */
-    suspend fun connect(address: String, autoConnect: Boolean = false, timeoutMs: Long = 60_000) {
+    suspend fun connect(address: String, autoConnect: Boolean = false, timeoutMs: Long = 120_000) {
         // Ignore if a connection is already in progress or established, so a
         // second connect() can't overwrite (and leak) the active gatt.
         if (_state.value != ConnectionState.DISCONNECTED) return
