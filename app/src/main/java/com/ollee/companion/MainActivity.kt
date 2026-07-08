@@ -1,8 +1,10 @@
 package com.ollee.companion
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -46,9 +48,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ollee.companion.ble.ConnectionState
 import com.ollee.companion.ui.theme.*
@@ -79,7 +81,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        permissionLauncher.launch(permissions)
+        // Only request permissions that haven't been granted yet.
+        if (permissions.any { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }) {
+            permissionLauncher.launch(permissions)
+        }
         setContent {
             OlleeTheme {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -103,15 +108,12 @@ fun OlleeScreen(vm: MainViewModel = viewModel()) {
     // When the whole app returns to the foreground, verify the link is still
     // live and re-sync, blocking the UI until it's done. ProcessLifecycleOwner
     // is process-scoped, so this fires reliably even when the notification tap
-    // spins up a fresh Activity — and ON_START won't fire on cold launch (the
-    // observer is added after the process has already started).
-    DisposableEffect(Unit) {
+    // spins up a fresh Activity.
+    LaunchedEffect(Unit) {
         val owner = ProcessLifecycleOwner.get()
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_START) vm.verifyConnection()
+        owner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            vm.verifyConnection()
         }
-        owner.lifecycle.addObserver(observer)
-        onDispose { owner.lifecycle.removeObserver(observer) }
     }
 
     Box(Modifier.fillMaxSize()) {
