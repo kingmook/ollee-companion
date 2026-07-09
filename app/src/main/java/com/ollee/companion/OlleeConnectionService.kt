@@ -20,6 +20,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.concurrent.Executors
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -62,9 +64,11 @@ class OlleeConnectionService : Service() {
                 )
 
                 if (state == ConnectionState.DISCONNECTED) {
+                    stopAutoSync()
                     scheduleReconnect()
                 } else if (state == ConnectionState.READY) {
                     reconnectJob?.cancel()
+                    startAutoSync()
                 }
             }
         }
@@ -86,6 +90,33 @@ class OlleeConnectionService : Service() {
                 }
             }
         }
+    }
+
+    private var autoSyncJob: Job? = null
+    private val autoSyncInterval = 30.minutes
+
+    /**
+     * Periodic background sync: push time and drain health records every 30 mins
+     * while connected. This ensures health data is backed up even if the app
+     * isn't opened for days.
+     */
+    private fun startAutoSync() {
+        if (autoSyncJob?.isActive == true) return
+        val repo = (application as OlleeApp).repository
+        autoSyncJob = scope.launch {
+            while (true) {
+                if (repo.connectionState.value == ConnectionState.READY) {
+                    runCatching { repo.syncTime() }
+                    runCatching { repo.syncHealthRecords() }
+                }
+                delay(autoSyncInterval)
+            }
+        }
+    }
+
+    private fun stopAutoSync() {
+        autoSyncJob?.cancel()
+        autoSyncJob = null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
