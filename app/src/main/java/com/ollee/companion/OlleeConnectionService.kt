@@ -54,13 +54,7 @@ class OlleeConnectionService : Service() {
         // auto-reconnect.
         val repo = (application as OlleeApp).repository
         scope.launch {
-            // Ignore the very first state emission if it's DISCONNECTED to avoid
-            // racing with the Activity's initial connect attempt on boot.
-            var firstEvent = true
             repo.connectionState.collect { state ->
-                val isFirst = firstEvent
-                firstEvent = false
-
                 updateNotification(
                     when (state) {
                         ConnectionState.CONNECTING -> "Searching for your Ollee watch…"
@@ -71,7 +65,7 @@ class OlleeConnectionService : Service() {
 
                 if (state == ConnectionState.DISCONNECTED) {
                     stopAutoSync()
-                    if (!isFirst) scheduleReconnect()
+                    scheduleReconnect()
                 } else if (state == ConnectionState.READY) {
                     reconnectJob?.cancel()
                     startAutoSync()
