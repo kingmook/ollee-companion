@@ -210,7 +210,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         userDisconnect = true
         reconnectingClearJob?.cancel()
         _ui.update { it.copy(reconnecting = false) }
-        repo.disconnect()
+        viewModelScope.launch { repo.disconnect() }
         OlleeConnectionService.stop(getApplication())
     }
 
@@ -290,7 +290,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // If the link is stale, drop it and reconnect immediately using a fast
         // direct connection (autoConnect=false) to avoid the 3s auto-delay.
         repo.disconnect()
-        connect(lastAddress ?: return, autoConnect = false)
+        delay(500) // Give the OS a moment to release the radio
+        
+        val addr = lastAddress ?: return
+        userDisconnect = false
+        pendingAddress = addr
+        stopScan()
+        OlleeConnectionService.start(getApplication())
+        
+        catching { repo.connect(addr, autoConnect = false) }
+            .onFailure { setMessage("Reconnect failed: ${it.message}") }
+
         repo.connectionState.first { it == ConnectionState.READY }
         withTimeoutOrNull(syncPhaseBudget) {
             tryRefresh()
@@ -339,25 +349,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Read device info, keeping the last-known value on a per-field miss so one
-     * slow read can't blank the whole card. Returns true only if the watch
-     * actually answered a core read (firmware or step goal) — the signal that
-     * the link is genuinely alive, not just superficially connected.
+     * Read device info, keeping the last-known value on a per-field miss.
+     * Returns true only if the watch actually answered a core read (firmware)
+     * within a short 1-second window — the signal that the link is genuinely
+     * alive and responsive.
      */
     private suspend fun tryRefresh(): Boolean {
-        val fw = catching { repo.firmware() }.getOrNull()
+        // Fast-path: if firmware read fails within 1s, the link is likely stale.
+        val fw = withTimeoutOrNull(1000) { catching { repo.firmware() }.getOrNull() }
+        if (fw == null) return false
+
+        // Link is alive, fetch the rest at normal speed.
         val goal = catching { repo.stepGoal() }.getOrNull()
         val live = catching { repo.liveValue() }.getOrNull()
         val nm = catching { repo.name() }.getOrNull()
         _ui.update {
             it.copy(
-                firmware = fw ?: it.firmware,
+                firmware = fw,
                 stepGoal = goal ?: it.stepGoal,
                 liveValue = live ?: it.liveValue,
                 name = nm ?: it.name,
             )
         }
-        return (fw != null) || (goal != null)
+        return true
     }
 
     fun syncTimeNow() = action { repo.syncTime(); "Time synced." }

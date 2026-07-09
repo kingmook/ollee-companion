@@ -18,7 +18,7 @@ class OlleeRepository(val gatt: OlleeGattManager) {
     suspend fun connect(address: String, autoConnect: Boolean = false, timeoutMs: Long = 120_000) =
         gatt.connect(address, autoConnect, timeoutMs)
 
-    fun disconnect() = gatt.disconnect()
+    suspend fun disconnect() = gatt.disconnect()
 
     // --- Implemented (protocol known) --------------------------------------
 

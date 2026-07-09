@@ -14,12 +14,13 @@ import android.os.PowerManager
 import androidx.core.content.ContextCompat
 import com.ollee.companion.ble.ConnectionState
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.concurrent.Executors
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -30,7 +31,8 @@ import kotlin.time.Duration.Companion.seconds
  */
 class OlleeConnectionService : Service() {
 
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val serviceDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+    private val scope = CoroutineScope(serviceDispatcher + SupervisorJob())
     private var reconnectJob: Job? = null
     private val reconnectDelay = 3.seconds
 
@@ -40,12 +42,16 @@ class OlleeConnectionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // Hold a wake lock for the entire life of the service. As long as we
+        // are tasked with keeping the watch connected, we must ensure the CPU
+        // doesn't enter a deep sleep that would suspend our BLE polling.
+        acquireWakeLock()
+        
         createChannel()
         startForegroundCompat()
 
         // Mirror the connection state in the notification and handle background
-        // auto-reconnect. The service stays up through transient drops; it is
-        // stopped explicitly via stop() only when the user taps Disconnect.
+        // auto-reconnect.
         val repo = (application as OlleeApp).repository
         scope.launch {
             repo.connectionState.collect { state ->
@@ -57,20 +63,9 @@ class OlleeConnectionService : Service() {
                     },
                 )
 
-                // Hold a wake lock only while connected, to ensure the keep-alive
-                // poll in OlleeGattManager can reliably wake the CPU.
-                if (state == ConnectionState.READY) {
-                    acquireWakeLock()
-                } else {
-                    releaseWakeLock()
-                }
-
                 if (state == ConnectionState.DISCONNECTED) {
                     scheduleReconnect()
                 } else if (state == ConnectionState.READY) {
-                    // Only cancel the reconnect job when we hit READY. If we
-                    // are CONNECTING, let the current job finish (cancelling it
-                    // here would abort the repo.connect() call it just started).
                     reconnectJob?.cancel()
                 }
             }
@@ -84,12 +79,8 @@ class OlleeConnectionService : Service() {
             val prefs = getSharedPreferences("ollee_prefs", MODE_PRIVATE)
             val addr = prefs.getString("last_address", null) ?: return@launch
             val repo = (application as OlleeApp).repository
-            // Background reconnection uses autoConnect=true so the OS keeps
-            // looking at low power until the watch is in range.
+            
             if (repo.connectionState.value == ConnectionState.DISCONNECTED) {
-                // Background reconnection uses a very long timeout; we want the
-                // OS to keep looking indefinitely without the CPU having to
-                // cycle through timeout/retry loops.
                 runCatching { repo.connect(addr, autoConnect = true, timeoutMs = 24 * 3600_000L) }
             }
         }
@@ -107,7 +98,7 @@ class OlleeConnectionService : Service() {
         if (wakeLock?.isHeld == true) return
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Ollee:ConnectionService")
-            .apply { acquire(10 * 60 * 1000L) } // 10 min safety timeout
+        wakeLock?.acquire()
     }
 
     private fun releaseWakeLock() {
