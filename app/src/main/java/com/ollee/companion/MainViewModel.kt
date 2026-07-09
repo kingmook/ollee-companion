@@ -239,20 +239,41 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * On returning to the foreground (notification tap or task switcher),
-     * reconnect *first* — bring up a fresh link before any syncing, so we never
-     * sync over a possibly-stale one — then push the time and refresh device
-     * info, blocking the UI with an overlay until it's done. Health records stay
-     * manual ("Sync health records"); only time + info sync here. Best-effort:
-     * if a fresh link can't be established within [verifyBudget] (1 min) we just
-     * drop the overlay and let auto-reconnect keep working.
+     * ensure we have a live connection. If we are currently disconnected or
+     * in the middle of a slow background auto-reconnect, force a fresh fast
+     * connection. If we are already connected, verify the link is still
+     * responsive and push the time, blocking the UI with an overlay until done.
      */
     fun verifyConnection() {
-        if (repo.connectionState.value != ConnectionState.READY) return
         if (verifyJob?.isActive == true) return
         verifyJob = viewModelScope.launch {
+            val state = repo.connectionState.value
+            // If we have no watch yet, there's nothing to verify.
+            if (state == ConnectionState.DISCONNECTED && lastAddress == null) return@launch
+
             _ui.update { it.copy(verifying = true) }
             try {
-                withTimeoutOrNull(verifyBudget) { reconnectThenSync() }
+                withTimeoutOrNull(verifyBudget) {
+                    if (state == ConnectionState.READY) {
+                        reconnectThenSync()
+                    } else {
+                        // Not connected or in a slow background reconnect. Force
+                        // a fresh fast connection now that we're foregrounded.
+                        val addr = lastAddress ?: return@withTimeoutOrNull
+                        repo.disconnect()
+                        userDisconnect = false
+                        pendingAddress = addr
+                        stopScan()
+                        OlleeConnectionService.start(getApplication())
+                        
+                        catching { repo.connect(addr, autoConnect = false) }
+                            .onFailure { setMessage("Connect failed: ${it.message}") }
+                            .getOrNull() ?: return@withTimeoutOrNull
+
+                        tryRefresh()
+                        catching { repo.syncTime() }
+                    }
+                }
             } finally {
                 _ui.update { it.copy(verifying = false) }
             }

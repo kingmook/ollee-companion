@@ -20,7 +20,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -41,7 +40,6 @@ class OlleeConnectionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        acquireWakeLock()
         createChannel()
         startForegroundCompat()
 
@@ -58,9 +56,21 @@ class OlleeConnectionService : Service() {
                         ConnectionState.DISCONNECTED -> "Reconnecting to your Ollee watch…"
                     },
                 )
+
+                // Hold a wake lock only while connected, to ensure the keep-alive
+                // poll in OlleeGattManager can reliably wake the CPU.
+                if (state == ConnectionState.READY) {
+                    acquireWakeLock()
+                } else {
+                    releaseWakeLock()
+                }
+
                 if (state == ConnectionState.DISCONNECTED) {
                     scheduleReconnect()
-                } else {
+                } else if (state == ConnectionState.READY) {
+                    // Only cancel the reconnect job when we hit READY. If we
+                    // are CONNECTING, let the current job finish (cancelling it
+                    // here would abort the repo.connect() call it just started).
                     reconnectJob?.cancel()
                 }
             }
@@ -77,7 +87,10 @@ class OlleeConnectionService : Service() {
             // Background reconnection uses autoConnect=true so the OS keeps
             // looking at low power until the watch is in range.
             if (repo.connectionState.value == ConnectionState.DISCONNECTED) {
-                runCatching { repo.connect(addr, autoConnect = true) }
+                // Background reconnection uses a very long timeout; we want the
+                // OS to keep looking indefinitely without the CPU having to
+                // cycle through timeout/retry loops.
+                runCatching { repo.connect(addr, autoConnect = true, timeoutMs = 24 * 3600_000L) }
             }
         }
     }
@@ -91,9 +104,10 @@ class OlleeConnectionService : Service() {
     }
 
     private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Ollee:ConnectionService")
-            .apply { acquire(10.minutes.inWholeMilliseconds) }
+            .apply { acquire(10 * 60 * 1000L) } // 10 min safety timeout
     }
 
     private fun releaseWakeLock() {

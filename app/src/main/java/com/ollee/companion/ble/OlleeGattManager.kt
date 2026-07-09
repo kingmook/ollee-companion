@@ -60,7 +60,7 @@ class OlleeGattManager(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var keepAliveJob: Job? = null
-    private val keepAliveInterval = 15.seconds
+    private val keepAliveInterval = 30.seconds
 
     @Volatile private var keepAliveSuppressed = false
 
