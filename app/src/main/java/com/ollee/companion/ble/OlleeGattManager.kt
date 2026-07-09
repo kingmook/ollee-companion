@@ -31,6 +31,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -60,24 +61,30 @@ class OlleeGattManager(private val context: Context) {
     // Dedicated single-threaded dispatcher for all GATT operations and callbacks.
     // This prevents main-thread blocking and ensures serialized access to the BLE stack.
     private val gattDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+    // Separate scope for GATT operations (background) and response processing (high priority).
     private val scope = CoroutineScope(gattDispatcher + SupervisorJob())
+    private val notifyScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     
     private var keepAliveJob: Job? = null
-    private val keepAliveInterval = 15.seconds
+    private val keepAliveInterval = 12.seconds
+    private val keepAliveTimeout = 5.seconds
 
     @Volatile private var keepAliveSuppressed = false
 
     private val callback = object : android.bluetooth.BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            scope.launch {
+            // Process state changes on the Main dispatcher. The Main thread
+            // is less likely to be throttled by the OS while a foreground 
+            // service is active.
+            CoroutineScope(Dispatchers.Main).launch {
                 if ((gatt != null) && (g !== gatt)) {
                     g.close()
                     return@launch
                 }
                 
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    // Small delay before discovery helps many Android devices
-                    // stabilize the encryption/link before querying services.
+                    // Larger MTU can help with stability and faster data transfer.
+                    g.requestMtu(256)
                     delay(600.milliseconds)
                     g.discoverServices()
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
@@ -89,8 +96,12 @@ class OlleeGattManager(private val context: Context) {
             }
         }
 
+        override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+            // MTU change is informational for us as our protocol chunks at 20 bytes.
+        }
+
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            scope.launch {
+            CoroutineScope(Dispatchers.Main).launch {
                 if (status != BluetoothGatt.GATT_SUCCESS) {
                     readyDeferred?.completeExceptionally(IOException("discovery failed $status"))
                     return@launch
@@ -108,7 +119,7 @@ class OlleeGattManager(private val context: Context) {
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
-            scope.launch {
+            CoroutineScope(Dispatchers.Main).launch {
                 if (d.uuid != OlleeProtocol.CCCD) return@launch
                 if (status != BluetoothGatt.GATT_SUCCESS) {
                     readyDeferred?.completeExceptionally(IOException("CCCD failed $status"))
@@ -117,9 +128,6 @@ class OlleeGattManager(private val context: Context) {
                 _state.value = ConnectionState.READY
                 readyDeferred?.complete(Unit)
                 
-                // Request balanced priority to ensure the link doesn't default to
-                // a super-low-power (and high-latency) background interval that
-                // could cause the watch to time out.
                 g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
 
                 startKeepAlive()
@@ -149,7 +157,11 @@ class OlleeGattManager(private val context: Context) {
     }
 
     private fun handleNotify(value: ByteArray) {
-        scope.launch {
+        // Process incoming notifications on a separate, high-priority scope.
+        // If we process these on the same gattDispatcher used for writes,
+        // a slow write or background throttling can delay the response 
+        // processing enough to trigger a request timeout.
+        notifyScope.launch {
             for (frame in reasm.feed(value)) {
                 if (!frame.crcOk) continue
                 frames.tryEmit(frame)
@@ -213,11 +225,33 @@ class OlleeGattManager(private val context: Context) {
     private fun startKeepAlive() {
         keepAliveJob?.cancel()
         keepAliveJob = scope.launch {
+            var failures = 0
             while (isActive) {
                 delay(keepAliveInterval)
                 if (_state.value != ConnectionState.READY) break
-                if (keepAliveSuppressed) continue
-                runCatching { request(OlleeProtocol.CMD_LIVE) }
+                if (keepAliveSuppressed) {
+                    failures = 0
+                    continue
+                }
+                
+                val result = runCatching { 
+                    request(OlleeProtocol.CMD_LIVE, timeoutMs = keepAliveTimeout.inWholeMilliseconds) 
+                }
+                
+                if (result.isSuccess) {
+                    failures = 0
+                    // Periodically "poke" the radio to ensure it hasn't 
+                    // drifted into an aggressive power-saving mode.
+                    gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+                } else {
+                    failures++
+                    // If we miss 5 polls in a row (~1 minute), force a decise
+                    // teardown so the background reconnect logic can start fresh.
+                    if (failures >= 5) {
+                        disconnect()
+                        break
+                    }
+                }
             }
         }
     }
@@ -245,7 +279,7 @@ class OlleeGattManager(private val context: Context) {
     /** Send a request and await the matching response (cmd + 0x20). */
     suspend fun request(
         cmd: Int, payload: ByteArray = ByteArray(0),
-        timeoutMs: Long = 2_000, retries: Int = 1,
+        timeoutMs: Long = 5_000, retries: Int = 1,
     ): OlleeProtocol.Frame = requestMutex.withLock {
         val respCmd = cmd + OlleeProtocol.RESP_OFFSET
         val frame = OlleeProtocol.buildFrame(cmd, payload)

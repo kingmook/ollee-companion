@@ -14,13 +14,12 @@ import android.os.PowerManager
 import androidx.core.content.ContextCompat
 import com.ollee.companion.ble.ConnectionState
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.util.concurrent.Executors
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -31,8 +30,9 @@ import kotlin.time.Duration.Companion.seconds
  */
 class OlleeConnectionService : Service() {
 
-    private val serviceDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
-    private val scope = CoroutineScope(serviceDispatcher + SupervisorJob())
+    // Use Main dispatcher for the service lifecycle; it's high priority and
+    // recommended for Service tasks that aren't heavy computation.
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var reconnectJob: Job? = null
     private val reconnectDelay = 3.seconds
 
@@ -42,9 +42,7 @@ class OlleeConnectionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        // Hold a wake lock for the entire life of the service. As long as we
-        // are tasked with keeping the watch connected, we must ensure the CPU
-        // doesn't enter a deep sleep that would suspend our BLE polling.
+        // Hold a wake lock for the entire life of the service.
         acquireWakeLock()
         
         createChannel()
@@ -73,15 +71,19 @@ class OlleeConnectionService : Service() {
     }
 
     private fun scheduleReconnect() {
-        reconnectJob?.cancel()
+        if (reconnectJob?.isActive == true) return
         reconnectJob = scope.launch {
             delay(reconnectDelay)
             val prefs = getSharedPreferences("ollee_prefs", MODE_PRIVATE)
             val addr = prefs.getString("last_address", null) ?: return@launch
             val repo = (application as OlleeApp).repository
             
+            // Background reconnection uses autoConnect=true so the OS keeps
+            // looking at low power until the watch is in range.
             if (repo.connectionState.value == ConnectionState.DISCONNECTED) {
-                runCatching { repo.connect(addr, autoConnect = true, timeoutMs = 24 * 3600_000L) }
+                runCatching { 
+                    repo.connect(addr, autoConnect = true, timeoutMs = 24 * 3600_000L) 
+                }
             }
         }
     }
@@ -97,7 +99,10 @@ class OlleeConnectionService : Service() {
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
         val pm = getSystemService(POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Ollee:ConnectionService")
+        // Ensure the wake lock stays active even if the service is restarted.
+        if (wakeLock == null) {
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Ollee:ConnectionService")
+        }
         wakeLock?.acquire()
     }
 
@@ -127,13 +132,12 @@ class OlleeConnectionService : Service() {
         val openApp = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java).addFlags(
-                // Reuse the existing Activity (with singleTop) instead of
-                // creating a duplicate when the notification is tapped.
                 Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP,
             ),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        return Notification.Builder(this, CHANNEL_ID)
+        val channel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) CHANNEL_ID else ""
+        return Notification.Builder(this, channel)
             .setContentTitle("Ollee Companion")
             .setContentText(text)
             .setSmallIcon(R.drawable.ic_stat_watch)
@@ -143,12 +147,14 @@ class OlleeConnectionService : Service() {
     }
 
     private fun createChannel() {
-        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_ID, "Watch connection", NotificationManager.IMPORTANCE_LOW,
-            ).apply { description = "Keeps the watch connected in the background" },
-        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            nm.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_ID, "Watch connection", NotificationManager.IMPORTANCE_LOW,
+                ).apply { description = "Keeps the watch connected in the background" },
+            )
+        }
     }
 
     companion object {
