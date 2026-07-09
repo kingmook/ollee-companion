@@ -77,7 +77,7 @@ data class UiState(
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repo = (app as OlleeApp).repository
-    private val store = (app as OlleeApp).recordStore
+    private val store = RecordStore(app)
 
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
@@ -92,6 +92,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         get() = prefs.getString(lastAddressKey, null)
 
     private var pendingAddress: String? = null
+    private var autoSyncJob: Job? = null
+    private val autoSyncInterval = 30.minutes
 
     private var scanJob: Job? = null
     private val scanTimeout = 20.seconds
@@ -103,6 +105,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // during an auto-reconnect before falling back to the connect panel.
     private val reconnectingGrace = 15.seconds
 
+    /** Serializes syncs so a resume-verify can await an in-flight auto-sync. */
+    private val syncMutex = Mutex()
     private var verifyJob: Job? = null
     private val verifyBudget = 60.seconds
     // Cap the post-reconnect info+time sync so the overlay can't hang on a slow
@@ -126,24 +130,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         }
                         reconnectingClearJob?.cancel()
                         _ui.update { it.copy(reconnecting = false) }
+                        startAutoSync()
                     }
-                    ConnectionState.CONNECTING -> {}
+                    ConnectionState.CONNECTING -> stopAutoSync()
                     ConnectionState.DISCONNECTED -> {
+                        stopAutoSync()
                         maybeAutoReconnect()
                     }
                 }
-            }
-        }
-        // Observe global sync status.
-        viewModelScope.launch {
-            repo.isSyncing.collect { syncing ->
-                _ui.update { it.copy(syncing = syncing) }
-            }
-        }
-        // Reload history whenever new records are merged (manual or background).
-        viewModelScope.launch {
-            repo.newRecords.collect {
-                applyRecords(withContext(Dispatchers.IO) { store.loadAll() })
             }
         }
         // Show stored history immediately, before any connection.
@@ -314,6 +308,40 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * On connect, sync time + device info only, then drain health records on a
+     * 30-minute tick while connected. Records never auto-drain on connect — that
+     * would contend with (and starve) the info reads over the serialized GATT
+     * queue; they sync periodically and via the manual button. Cancelled on
+     * disconnect.
+     */
+    private fun startAutoSync() {
+        if (autoSyncJob?.isActive == true) return
+        autoSyncJob = viewModelScope.launch {
+            catching { repo.syncTime() }
+            refreshInternal()
+            setMessage("Synced time with watch.")
+            while (isActive) {
+                delay(autoSyncInterval)
+                fullSync()
+            }
+        }
+    }
+
+    /** One silent full pass: push time, refresh device info, drain records. */
+    private suspend fun fullSync() {
+        catching { repo.syncTime() }
+        refreshInternal()
+        // recover=false: this runs on autoSyncJob, which a reconnect would
+        // cancel from under us. The periodic loop just retries next cycle.
+        doRecordsSync(announce = false, recover = false)
+    }
+
+    private fun stopAutoSync() {
+        autoSyncJob?.cancel()
+        autoSyncJob = null
+    }
+
     fun refresh() = viewModelScope.launch { refreshInternal() }
 
     private suspend fun refreshInternal() {
@@ -351,16 +379,40 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Drain the watch's log, merge into 30-day storage, and refresh history. */
     fun syncRecords() = viewModelScope.launch { doRecordsSync(announce = true) }
 
-    private suspend fun doRecordsSync(announce: Boolean) {
-        try {
-            val recs = repo.syncHealthRecords()
-            if (announce) {
-                // History reload is handled by the newRecords observer in init.
-                setMessage("Synced ${recs.size} records.")
+    private suspend fun doRecordsSync(announce: Boolean, recover: Boolean = true) =
+        syncMutex.withLock {
+            // Serialized (not skipped): a resume-verify must be able to await an
+            // already-running auto-sync rather than racing past it.
+            _ui.update { it.copy(syncing = true) }
+            try {
+                val recs = try {
+                    repo.syncRecords()
+                } catch (e: LinkDeadException) {
+                    // Only a genuinely dead link (not a mid-drain hiccup) forces
+                    // a clean reconnect and one retry before giving up.
+                    if (recover && reconnectFresh()) repo.syncRecords() else throw e
+                }
+                val all = withContext(Dispatchers.IO) { store.merge(recs) }
+                applyRecords(all)
+                if (announce) {
+                    setMessage("Synced ${recs.size} records (${all.size} kept, 30 days).")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (announce) setMessage("Records sync failed: ${e.message}")
+            } finally {
+                _ui.update { it.copy(syncing = false) }
             }
-        } catch (e: Exception) {
-            if (announce) setMessage("Records sync failed: ${e.message}")
         }
+
+    /** Drop the link and wait for auto-reconnect to bring up a fresh one. */
+    private suspend fun reconnectFresh(): Boolean {
+        repo.disconnect()
+        return withTimeoutOrNull(verifyBudget) {
+            repo.connectionState.first { it == ConnectionState.READY }
+            true
+        } == true
     }
 
     /** Split stored records into per-type history and daily summaries. */

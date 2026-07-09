@@ -1,12 +1,6 @@
 package com.ollee.companion.ble
 
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 
@@ -21,38 +15,10 @@ class OlleeRepository(val gatt: OlleeGattManager) {
 
     val connectionState get() = gatt.state
 
-    private val _isSyncing = MutableStateFlow(false)
-    val isSyncing = _isSyncing.asStateFlow()
-
-    private val _newRecords = MutableSharedFlow<List<OlleeProtocol.Record>>()
-    val newRecords = _newRecords.asSharedFlow()
-
-    private val syncMutex = Mutex()
-
     suspend fun connect(address: String, autoConnect: Boolean = false, timeoutMs: Long = 120_000) =
         gatt.connect(address, autoConnect, timeoutMs)
 
     suspend fun disconnect() = gatt.disconnect()
-
-    // --- Sync --------------------------------------------------------------
-
-    /**
-     * Perform a full health record sync. Fetches records from the watch,
-     * emits them to [newRecords], and updates [isSyncing]. Serialized via
-     * [syncMutex] to prevent overlapping syncs.
-     */
-    suspend fun syncHealthRecords(): List<OlleeProtocol.Record> = syncMutex.withLock {
-        _isSyncing.value = true
-        try {
-            val recs = syncRecords()
-            if (recs.isNotEmpty()) {
-                _newRecords.emit(recs)
-            }
-            recs
-        } finally {
-            _isSyncing.value = false
-        }
-    }
 
     // --- Implemented (protocol known) --------------------------------------
 
