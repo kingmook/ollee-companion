@@ -151,7 +151,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             applyRecords(withContext(Dispatchers.IO) { store.loadAll() })
         }
         // On launch, auto-connect to the last successfully connected watch.
-        lastAddress?.let { connect(it) }
+        // Small delay to allow the system BT stack to stabilize after boot.
+        viewModelScope.launch {
+            delay(1500)
+            lastAddress?.let { connect(it) }
+        }
     }
 
     private val scanner get() =

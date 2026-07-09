@@ -547,7 +547,7 @@ private fun SyncButton(ui: UiState, vm: MainViewModel) {
 }
 
 /** Days of history shown in the record charts. */
-private const val CHART_DAYS = 14
+private const val CHART_DAYS = 7
 
 /** Tap handler that maps a tap position to a bar index (same slot math as drawing). */
 private fun Modifier.tapChartBar(count: Int, onTap: (Int) -> Unit): Modifier =
@@ -584,14 +584,20 @@ private fun StepsChart(days: List<DailyStep>) {
         }
         Canvas(
             Modifier.fillMaxWidth().height(110.dp)
-                .tapChartBar(data.size) { i -> selected = if (selected == i) null else i },
+                .tapChartBar(CHART_DAYS) { i ->
+                    val dataIdx = i - (CHART_DAYS - data.size)
+                    if (dataIdx in data.indices) {
+                        selected = if (selected == dataIdx) null else dataIdx
+                    }
+                },
         ) {
-            val n = data.size
+            val n = CHART_DAYS
             val gap = 3.dp.toPx()
             val w = (size.width - (gap * (n - 1))) / n
             val r = CornerRadius(w / 3f)
+            val startIdx = n - data.size
             data.forEachIndexed { i, d ->
-                val x = i * (w + gap)
+                val x = (startIdx + i) * (w + gap)
                 drawRoundRect(track, Offset(x, 0f), Size(w, size.height), r)
                 if (d.steps > 0) {
                     val h = (size.height * d.steps) / maxSteps
@@ -601,8 +607,8 @@ private fun StepsChart(days: List<DailyStep>) {
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            AxisLabel(data.first().label)
-            AxisLabel(data.last().label)
+            AxisLabel(data.firstOrNull()?.label ?: "")
+            AxisLabel(data.lastOrNull()?.label ?: "")
         }
     }
 }
@@ -611,8 +617,8 @@ private fun StepsChart(days: List<DailyStep>) {
 @Composable
 private fun TempChart(days: List<DailyTemp>) {
     val data = remember(days) { days.sortedBy { it.dayEpoch }.takeLast(CHART_DAYS) }
-    val lo = remember(data) { floor(data.minOf { it.avgC }) }
-    val hi = remember(data) { ceil(data.maxOf { it.avgC }).coerceAtLeast(lo + 1.0) }
+    val lo = remember(data) { floor(data.minOfOrNull { it.avgC } ?: 0.0) }
+    val hi = remember(data) { ceil(data.maxOfOrNull { it.avgC } ?: 10.0).coerceAtLeast(lo + 1.0) }
     var selected by remember(data) { mutableStateOf<Int?>(null) }
     val line = MaterialTheme.colorScheme.tertiary
     val dotSelected = MaterialTheme.colorScheme.primary
@@ -633,15 +639,21 @@ private fun TempChart(days: List<DailyTemp>) {
         }
         Canvas(
             Modifier.fillMaxWidth().height(110.dp)
-                .tapChartBar(data.size) { i -> selected = if (selected == i) null else i },
+                .tapChartBar(CHART_DAYS) { i ->
+                    val dataIdx = i - (CHART_DAYS - data.size)
+                    if (dataIdx in data.indices) {
+                        selected = if (selected == dataIdx) null else dataIdx
+                    }
+                },
         ) {
-            val n = data.size
+            val n = CHART_DAYS
             val gap = 3.dp.toPx()
             val w = (size.width - (gap * (n - 1))) / n
             val pad = 6.dp.toPx()  // keep dots at the extremes unclipped
             val span = hi - lo
+            val startIdx = n - data.size
             // Slot-centred x positions, so taps align with the steps chart's slots.
-            fun xAt(i: Int) = (i * (w + gap)) + (w / 2f)
+            fun xAt(i: Int) = ((startIdx + i) * (w + gap)) + (w / 2f)
             fun yAt(i: Int) =
                 pad + (((hi - data[i].avgC) / span).toFloat() * (size.height - (2 * pad)))
             // Faint gridlines marking the scale bounds.
@@ -651,10 +663,10 @@ private fun TempChart(days: List<DailyTemp>) {
                 Offset(0f, size.height - pad), Offset(size.width, size.height - pad),
                 1.dp.toPx(),
             )
-            if (n > 1) {
+            if (data.size > 1) {
                 val path = Path().apply {
                     moveTo(xAt(0), yAt(0))
-                    for (i in 1 until n) lineTo(xAt(i), yAt(i))
+                    for (i in 1 until data.size) lineTo(xAt(i), yAt(i))
                 }
                 drawPath(
                     path, line,
@@ -664,7 +676,7 @@ private fun TempChart(days: List<DailyTemp>) {
                     ),
                 )
             }
-            for (i in 0 until n) {
+            for (i in 0 until data.size) {
                 val isSel = i == selected
                 drawCircle(
                     if (isSel) dotSelected else line,
@@ -674,8 +686,8 @@ private fun TempChart(days: List<DailyTemp>) {
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            AxisLabel(data.first().label)
-            AxisLabel(data.last().label)
+            AxisLabel(data.firstOrNull()?.label ?: "")
+            AxisLabel(data.lastOrNull()?.label ?: "")
         }
     }
 }

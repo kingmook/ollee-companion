@@ -174,10 +174,10 @@ class OlleeGattManager(private val context: Context) {
      * Connect to a known device by MAC and wait until READY.
      */
     suspend fun connect(address: String, autoConnect: Boolean = false, timeoutMs: Long = 120_000) {
-        // Ensure any previous connection is fully torn down before starting a new one.
-        if (_state.value != ConnectionState.DISCONNECTED) {
-            disconnect()
-        }
+        // If we are already connecting or connected, don't interrupt unless this 
+        // is a forced reset. status 147 often comes from multiple overlapping
+        // connectGatt calls to the same address.
+        if (_state.value != ConnectionState.DISCONNECTED) return
         
         val mgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         val device = mgr.adapter.getRemoteDevice(address)
