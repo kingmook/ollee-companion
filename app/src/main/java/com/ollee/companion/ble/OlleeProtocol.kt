@@ -104,21 +104,25 @@ object OlleeProtocol {
         frame.asSequence().chunked(size).map { it.toByteArray() }.toList()
 
     /**
-     * Build a set-time (0x23) frame: LE unix timestamp + LE timezone offset,
-     * then 10 trailing bytes [A:4][B:4][counter:2]. The official app fills these
-     * with session-specific values, but a live test (zeroing them while the
-     * clock still set correctly) confirmed the watch ignores them, so we send
-     * zeros instead of carrying stale captured bytes.
+     * Build the 20-byte set-time (0x23) payload used by the official app:
+     * LE unix timestamp + LE timezone offset + 12 session-specific bytes.
+     * Live testing confirmed the watch accepts zeroes for the session fields,
+     * so do not copy values that only belong to a captured official session.
      */
-    fun setTimeFrame(
+    fun setTimePayload(
         epochSeconds: Long = System.currentTimeMillis() / 1000,
         tzOffsetSeconds: Int = TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000,
     ): ByteArray {
         val p = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
         p.putInt((epochSeconds and 0xFFFFFFFFL).toInt())
         p.putInt(tzOffsetSeconds)
-        return buildFrame(CMD_SET_TIME, p.array() + ByteArray(10))
+        return p.array() + ByteArray(12)
     }
+
+    fun setTimeFrame(
+        epochSeconds: Long = System.currentTimeMillis() / 1000,
+        tzOffsetSeconds: Int = TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000,
+    ): ByteArray = buildFrame(CMD_SET_TIME, setTimePayload(epochSeconds, tzOffsetSeconds))
 
     /**
      * Payload for a set-alarm (0x25) command.

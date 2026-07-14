@@ -30,6 +30,23 @@ class OlleeProtocolTest {
     }
 
     @Test
+    fun setTimePayloadMatchesOfficialTwentyByteLayout() {
+        val payload = OlleeProtocol.setTimePayload(
+            epochSeconds = 0x6A567FCEL,
+            tzOffsetSeconds = -14_400,
+        )
+
+        assertEquals(20, payload.size)
+        assertArrayEquals(
+            byteArrayOf(
+                0xCE.toByte(), 0x7F, 0x56, 0x6A,
+                0xC0.toByte(), 0xC7.toByte(), 0xFF.toByte(), 0xFF.toByte(),
+            ) + ByteArray(12),
+            payload,
+        )
+    }
+
+    @Test
     fun testParseRecord() {
         // Record: type=0, start=100, end=200, value=300
         val payload = byteArrayOf(

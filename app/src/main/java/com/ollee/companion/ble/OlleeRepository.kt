@@ -63,8 +63,17 @@ class OlleeRepository(val gatt: OlleeGattManager) {
     suspend fun liveValue(): Int =
         gatt.request(OlleeProtocol.CMD_LIVE).payload.beInt(2)
 
-    /** Automatic sync: push the phone's current time + timezone to the watch. */
-    suspend fun syncTime() = gatt.send(OlleeProtocol.setTimeFrame())
+    /** Push the phone's time and wait until the watch confirms it applied the update. */
+    suspend fun syncTime() {
+        // This changes watch state, so a missing response must not trigger a
+        // duplicate write. The official app receives 0x43 in about 150 ms.
+        gatt.request(
+            OlleeProtocol.CMD_SET_TIME,
+            OlleeProtocol.setTimePayload(),
+            timeoutMs = 3_000,
+            retries = 0,
+        )
+    }
 
     /**
      * Drain the watch's health/activity log: ask for the count (0x27), fetch

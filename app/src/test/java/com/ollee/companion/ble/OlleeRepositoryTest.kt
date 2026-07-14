@@ -54,9 +54,21 @@ class OlleeRepositoryTest {
 
     @Test
     fun testSyncTime() = runTest {
-        coEvery { gatt.send(any()) } returns Unit
+        coEvery {
+            gatt.request(OlleeProtocol.CMD_SET_TIME, any(), 3_000, 0)
+        } returns frame(OlleeProtocol.CMD_SET_TIME)
+
         repo.syncTime()
-        coVerify { gatt.send(any()) }
+
+        coVerify(exactly = 1) {
+            gatt.request(
+                OlleeProtocol.CMD_SET_TIME,
+                match { it.size == 20 },
+                3_000,
+                0,
+            )
+        }
+        coVerify(exactly = 0) { gatt.send(any()) }
     }
 
     @Test
