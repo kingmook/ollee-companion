@@ -658,13 +658,14 @@ private fun FeatureGrid(ui: UiState, vm: MainViewModel, onLocate: () -> Unit) {
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         SunCard(ui, onLocate, Modifier.weight(1f).fillMaxHeight())
-        TimeSyncCard(vm, Modifier.weight(1f).fillMaxHeight())
+        TimeSyncCard(ui, vm, Modifier.weight(1f).fillMaxHeight())
     }
 }
 
 @Composable
-private fun TimeSyncCard(vm: MainViewModel, modifier: Modifier = Modifier) {
+private fun TimeSyncCard(ui: UiState, vm: MainViewModel, modifier: Modifier = Modifier) {
     FeatureCard("Time Sync", Icons.Filled.Sync, modifier) {
+        MutedText(lastSyncLabel(ui.lastTimeSyncEpoch))
         FilledTonalButton(onClick = { vm.syncTimeNow() }) { Text("Sync now") }
     }
 }
@@ -695,10 +696,23 @@ private fun HealthRecordsCard(ui: UiState, vm: MainViewModel) {
                 }
             }
         }
-        MutedText("Last 30 days · tap to refresh")
+        MutedText("Last 30 days · ${lastSyncLabel(ui.lastHealthSyncEpoch)}")
+        ui.syncError?.let { error ->
+            Text(
+                error,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
         SyncButton(ui, vm)
     }
 }
+
+private fun lastSyncLabel(epochSeconds: Long?): String =
+    epochSeconds?.let {
+        "Last synced " + SimpleDateFormat("MMM d, HH:mm", Locale.getDefault())
+            .format(Date(it * 1000))
+    } ?: "Not synced yet"
 
 @Composable
 private fun RecordSection(

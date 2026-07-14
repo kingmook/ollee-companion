@@ -12,31 +12,22 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ollee.companion.ble.ConnectionState
 import com.ollee.companion.ble.OlleeProtocol
-import com.ollee.companion.data.RecordStore
-import com.ollee.companion.data.RecordStoreException
 import com.ollee.companion.feature.SunCalculator
 import com.ollee.companion.feature.SunTimes
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 data class ScannedDevice(val name: String, val address: String)
@@ -72,17 +63,17 @@ data class UiState(
     val hrDaily: List<DailyHr> = emptyList(),
     val stepDaily: List<DailyStep> = emptyList(),
     val todaySteps: Int = 0,
+    val lastTimeSyncEpoch: Long? = null,
+    val lastHealthSyncEpoch: Long? = null,
+    val syncError: String? = null,
     val message: String? = null,
 )
 
-class MainViewModel @JvmOverloads constructor(
-    app: Application,
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val periodicSyncEnabled: Boolean = true,
-) : AndroidViewModel(app) {
+class MainViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val repo = (app as OlleeApp).repository
-    private val store = RecordStore(app)
+    private val olleeApp = app as OlleeApp
+    private val repo = olleeApp.repository
+    private val syncCoordinator = olleeApp.syncCoordinator
 
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
@@ -97,8 +88,6 @@ class MainViewModel @JvmOverloads constructor(
         get() = prefs.getString(lastAddressKey, null)
 
     private var pendingAddress: String? = null
-    private var autoSyncJob: Job? = null
-    private val autoSyncInterval = 30.minutes
 
     private var scanJob: Job? = null
     private val scanTimeout = 20.seconds
@@ -106,8 +95,6 @@ class MainViewModel @JvmOverloads constructor(
     /** True only when the user taps Disconnect, to suppress auto-reconnect. */
     private var userDisconnect = false
 
-    /** Serializes syncs so a resume-verify can await an in-flight auto-sync. */
-    private val syncMutex = Mutex()
     private var verifyJob: Job? = null
     private val verifyBudget = 60.seconds
     // Cap the post-reconnect info+time sync so the overlay can't hang on a slow
@@ -130,22 +117,28 @@ class MainViewModel @JvmOverloads constructor(
                             prefs.edit { putString(lastAddressKey, addr) }
                         }
                         _ui.update { it.copy(reconnecting = false) }
-                        startAutoSync()
+                        viewModelScope.launch { refreshInternal() }
                     }
-                    ConnectionState.CONNECTING -> stopAutoSync()
+                    ConnectionState.CONNECTING -> Unit
                     ConnectionState.DISCONNECTED -> {
-                        stopAutoSync()
                         maybeAutoReconnect()
                     }
                 }
             }
         }
-        // Show stored history immediately, before any connection.
         viewModelScope.launch {
-            try {
-                applyRecords(withContext(ioDispatcher) { store.loadAll() })
-            } catch (e: RecordStoreException) {
-                setMessage(e.message ?: "Stored health history could not be read.")
+            syncCoordinator.records.collect { records -> applyRecords(records) }
+        }
+        viewModelScope.launch {
+            syncCoordinator.status.collect { status ->
+                _ui.update {
+                    it.copy(
+                        syncing = status.syncing,
+                        lastTimeSyncEpoch = status.lastTimeSyncEpoch,
+                        lastHealthSyncEpoch = status.lastHealthSyncEpoch,
+                        syncError = status.lastError,
+                    )
+                }
             }
         }
         // Initial auto-connect is initiated by the UI only after Bluetooth and
@@ -267,7 +260,7 @@ class MainViewModel @JvmOverloads constructor(
                             .getOrNull() ?: return@withTimeoutOrNull
 
                         tryRefresh()
-                        catching { repo.syncTime() }
+                        syncCoordinator.syncTime()
                     }
                 }
             } finally {
@@ -280,7 +273,7 @@ class MainViewModel @JvmOverloads constructor(
         // Try a quick refresh first. If the link is still alive (responsive),
         // we're done instantly.
         if (tryRefresh()) {
-            catching { repo.syncTime() }
+            syncCoordinator.syncTime()
             return
         }
         // If the link is stale, drop it and reconnect immediately using a fast
@@ -300,41 +293,8 @@ class MainViewModel @JvmOverloads constructor(
         repo.connectionState.first { it == ConnectionState.READY }
         withTimeoutOrNull(syncPhaseBudget) {
             tryRefresh()
-            catching { repo.syncTime() }
+            syncCoordinator.syncTime()
         }
-    }
-
-    /**
-     * On connect, sync time + device info only, then drain health records on a
-     * 30-minute tick while connected. Records never auto-drain on connect — that
-     * would contend with (and starve) the info reads over the serialized GATT
-     * queue; they sync periodically and via the manual button. Cancelled on
-     * disconnect.
-     */
-    private fun startAutoSync() {
-        if (autoSyncJob?.isActive == true) return
-        autoSyncJob = viewModelScope.launch {
-            catching { repo.syncTime() }
-            refreshInternal()
-            setMessage("Synced time with watch.")
-            if (!periodicSyncEnabled) return@launch
-            while (isActive) {
-                delay(autoSyncInterval)
-                fullSync()
-            }
-        }
-    }
-
-    /** One silent full pass: push time, refresh device info, drain records. */
-    private suspend fun fullSync() {
-        catching { repo.syncTime() }
-        refreshInternal()
-        doRecordsSync(announce = false)
-    }
-
-    private fun stopAutoSync() {
-        autoSyncJob?.cancel()
-        autoSyncJob = null
     }
 
     fun refresh() = viewModelScope.launch { refreshInternal() }
@@ -349,10 +309,10 @@ class MainViewModel @JvmOverloads constructor(
      * within a short 1-second window — the signal that the link is genuinely
      * alive and responsive.
      */
-    private suspend fun tryRefresh(): Boolean {
+    private suspend fun tryRefresh(): Boolean = syncCoordinator.withWatchAccess {
         // Fast-path: if firmware read fails within 1s, the link is likely stale.
         val fw = withTimeoutOrNull(1000) { catching { repo.firmware() }.getOrNull() }
-        if (fw == null) return false
+        if (fw == null) return@withWatchAccess false
 
         // Link is alive, fetch the rest at normal speed.
         val goal = catching { repo.stepGoal() }.getOrNull()
@@ -366,46 +326,34 @@ class MainViewModel @JvmOverloads constructor(
                 name = nm ?: it.name,
             )
         }
-        return true
+        true
     }
 
-    fun syncTimeNow() = action { repo.syncTime(); "Time synced." }
+    fun syncTimeNow() = action {
+        val result = syncCoordinator.syncTime()
+        if (!result.success) throw IllegalStateException(result.error ?: "Time sync failed")
+        "Time synced."
+    }
 
     /** Drain the watch's log, merge into 30-day storage, and refresh history. */
-    fun syncRecords() = viewModelScope.launch { doRecordsSync(announce = true) }
-
-    private suspend fun doRecordsSync(announce: Boolean) =
-        syncMutex.withLock {
-            // Serialized (not skipped): a resume-verify must be able to await an
-            // already-running auto-sync rather than racing past it.
-            _ui.update { it.copy(syncing = true) }
-            try {
-                val sync = repo.syncRecords()
-                val all = withContext(ioDispatcher) { store.merge(sync.records) }
-                applyRecords(all)
-                when {
-                    !sync.drained -> setMessage(
-                        (sync.failure ?: "Health record sync did not complete") + ". " +
-                            "The watch log was not acknowledged; retry the sync.",
-                    )
-                    !sync.acknowledged -> setMessage(
-                        "Saved ${sync.records.size} records, but the watch did not confirm cleanup. " +
-                            "A retry is safe; duplicates are ignored.",
-                    )
-                    announce -> setMessage(
-                        "Synced ${sync.records.size} records (${all.size} kept, 30 days).",
-                    )
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (announce || e is RecordStoreException) {
-                    setMessage("Records sync failed: ${e.message}")
-                }
-            } finally {
-                _ui.update { it.copy(syncing = false) }
-            }
+    fun syncRecords() = viewModelScope.launch {
+        val outcome = syncCoordinator.syncHealth()
+        val sync = outcome.sync
+        when {
+            sync == null -> setMessage(outcome.error ?: "Records sync failed.")
+            !sync.drained -> setMessage(
+                (outcome.error ?: "Health record sync did not complete") + ". " +
+                    "The watch log was not acknowledged; retry the sync.",
+            )
+            !sync.acknowledged -> setMessage(
+                "Saved ${sync.records.size} records, but the watch did not confirm cleanup. " +
+                    "A retry is safe; duplicates are ignored.",
+            )
+            else -> setMessage(
+                "Synced ${sync.records.size} records (${outcome.totalStored} kept, 30 days).",
+            )
         }
+    }
 
     /** Split stored records into per-type history and daily summaries. */
     private fun applyRecords(all: List<OlleeProtocol.Record>) {

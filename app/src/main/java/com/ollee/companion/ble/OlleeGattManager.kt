@@ -10,6 +10,7 @@ import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.Build
+import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -72,6 +73,7 @@ class OlleeGattManager(private val context: Context) {
     private val callback = object : android.bluetooth.BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             scope.launch {
+                Log.i(TAG, "GATT state changed; status=$status newState=$newState")
                 if (!isActiveGatt(g)) {
                     g.close()
                     return@launch
@@ -267,9 +269,11 @@ class OlleeGattManager(private val context: Context) {
                     gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
                 } else {
                     failures++
-                    // If we miss 5 polls in a row (~1 minute), force a decise
+                    Log.w(TAG, "BLE keep-alive failed ($failures/5)", result.exceptionOrNull())
+                    // If we miss 5 polls in a row (~1 minute), force a decisive
                     // teardown so the background reconnect logic can start fresh.
                     if (failures >= 5) {
+                        Log.w(TAG, "BLE keep-alive failure threshold reached; disconnecting")
                         disconnect()
                         break
                     }
@@ -381,5 +385,9 @@ class OlleeGattManager(private val context: Context) {
                 }
             }
         }
+    }
+
+    companion object {
+        private const val TAG = "OlleeGattManager"
     }
 }

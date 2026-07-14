@@ -13,9 +13,15 @@ class OlleeApp : Application() {
 
     lateinit var repository: OlleeRepository
         private set
+    lateinit var syncCoordinator: SyncCoordinator
+        private set
+    @Volatile
+    internal var connectionServiceActive: Boolean = false
 
     override fun onCreate() {
         super.onCreate()
         repository = OlleeRepository(OlleeGattManager(this))
+        syncCoordinator = SyncCoordinator(this, repository)
+        OlleeSyncWorker.schedulePeriodic(this)
     }
 }

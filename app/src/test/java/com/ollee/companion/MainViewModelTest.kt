@@ -5,9 +5,9 @@ import android.content.SharedPreferences
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
-import app.cash.turbine.test
 import com.ollee.companion.ble.ConnectionState
 import com.ollee.companion.ble.OlleeRepository
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
@@ -29,6 +29,7 @@ class MainViewModelTest {
 
     private lateinit var app: OlleeApp
     private lateinit var repo: OlleeRepository
+    private lateinit var syncCoordinator: SyncCoordinator
     private lateinit var viewModel: MainViewModel
     private lateinit var viewModelStore: ViewModelStore
     private lateinit var testDispatcher: TestDispatcher
@@ -42,9 +43,16 @@ class MainViewModelTest {
         
         app = mockk(relaxed = true)
         repo = mockk(relaxed = true)
+        syncCoordinator = mockk(relaxed = true)
         val prefs: SharedPreferences = mockk(relaxed = true)
+        val records = MutableStateFlow(emptyList<com.ollee.companion.ble.OlleeProtocol.Record>())
+        val syncStatus = MutableStateFlow(SyncStatus())
         
         every { app.repository } returns repo
+        every { app.syncCoordinator } returns syncCoordinator
+        every { syncCoordinator.records } returns records
+        every { syncCoordinator.status } returns syncStatus
+        coEvery { syncCoordinator.withWatchAccess<Boolean>(any()) } returns false
         every { app.getSharedPreferences(any(), any()) } returns prefs
         every { app.applicationContext } returns app
         every { app.filesDir } returns File("build/tmp/test")
@@ -55,7 +63,7 @@ class MainViewModelTest {
         val factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                MainViewModel(app, testDispatcher, periodicSyncEnabled = false) as T
+                MainViewModel(app) as T
         }
         viewModel = ViewModelProvider(viewModelStore, factory)[MainViewModel::class.java]
     }
@@ -73,32 +81,17 @@ class MainViewModelTest {
     }
 
     @Test
-    fun testInitialState() = runTest {
-        viewModel.ui.test {
-            val state = awaitItem()
-            assertEquals(ConnectionState.DISCONNECTED, state.connection)
-        }
+    fun testInitialState() = runTest(testDispatcher) {
+        testDispatcher.scheduler.runCurrent()
+        assertEquals(ConnectionState.DISCONNECTED, viewModel.ui.value.connection)
     }
 
     @Test
-    fun testConnectionStateUpdate() = runTest {
-        viewModel.ui.test {
-            assertEquals(ConnectionState.DISCONNECTED, awaitItem().connection)
-            
-            connectionStateFlow.value = ConnectionState.READY
-            
-            // We expect multiple updates:
-            // 1. ConnectionState.READY update
-            // 2. tryRefresh updates (firmware, goal, etc.)
-            // 3. setMessage("Synced time with watch.")
-            
-            var lastState = awaitItem()
-            while (lastState.message == null) {
-                lastState = awaitItem()
-            }
-            
-            assertEquals(ConnectionState.READY, lastState.connection)
-            assertEquals("Synced time with watch.", lastState.message)
-        }
+    fun testConnectionStateUpdate() = runTest(testDispatcher) {
+        testDispatcher.scheduler.runCurrent()
+        connectionStateFlow.value = ConnectionState.READY
+        testDispatcher.scheduler.runCurrent()
+
+        assertEquals(ConnectionState.READY, viewModel.ui.value.connection)
     }
 }

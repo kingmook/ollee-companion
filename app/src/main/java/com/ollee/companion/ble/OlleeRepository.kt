@@ -2,6 +2,8 @@ package com.ollee.companion.ble
 
 import android.util.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 
@@ -19,10 +21,23 @@ data class RecordSyncResult(
 /** High-level Ollee API built on [OlleeGattManager]. */
 class OlleeRepository(val gatt: OlleeGattManager) {
 
+    private val connectMutex = Mutex()
+
     val connectionState get() = gatt.state
 
-    suspend fun connect(address: String, autoConnect: Boolean = false, timeoutMs: Long = 120_000) =
-        gatt.connect(address, autoConnect, timeoutMs)
+    /** Returns true only when this call initiated the connection. */
+    suspend fun connect(
+        address: String,
+        autoConnect: Boolean = false,
+        timeoutMs: Long = 120_000,
+    ): Boolean = connectMutex.withLock {
+        if (connectionState.value == ConnectionState.READY) {
+            false
+        } else {
+            gatt.connect(address, autoConnect, timeoutMs)
+            true
+        }
+    }
 
     suspend fun disconnect() = gatt.disconnect()
 
