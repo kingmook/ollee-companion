@@ -8,7 +8,13 @@ import java.nio.charset.StandardCharsets
 class LinkDeadException(cause: Throwable) : IOException(cause.message, cause)
 
 private const val MAX_RECORDS = 5_000        // sanity cap on a (possibly garbage) count
-private const val MAX_FETCH_MISSES = 4       // consecutive dropped fetches => link dead
+
+data class RecordSyncResult(
+    val records: List<OlleeProtocol.Record>,
+    val expectedCount: Int,
+    val drained: Boolean,
+    val acknowledged: Boolean,
+)
 
 /** High-level Ollee API built on [OlleeGattManager]. */
 class OlleeRepository(val gatt: OlleeGattManager) {
@@ -45,44 +51,50 @@ class OlleeRepository(val gatt: OlleeGattManager) {
 
     /**
      * Drain the watch's health/activity log: ask for the count (0x27), fetch
-     * each record (0x28), then acknowledge (0x2d). Returns steps, hourly
-     * temperature, and heart-rate records.
+     * each record (0x28), then acknowledge (0x2d). The result distinguishes a
+     * complete drain from partial data; partial drains are never acknowledged.
      *
      * Runs as a burst: keep-alive paused (a CMD_LIVE poll slipping between
      * fetches wedges the watch so it stops answering 0x28) and the connection
      * bumped to high priority so the many fetch round-trips don't crawl at the
      * watch's power-saving connection interval.
      */
-    suspend fun syncRecords(): List<OlleeProtocol.Record> = gatt.burst {
-        val count = countRecords().coerceIn(0, MAX_RECORDS)
+    suspend fun syncRecords(): RecordSyncResult = gatt.burst {
+        val count = countRecords()
+        if (count !in 0..MAX_RECORDS) {
+            return@burst RecordSyncResult(emptyList(), count, drained = false, acknowledged = false)
+        }
         val records = ArrayList<OlleeProtocol.Record>(count)
-        var consecutiveMisses = 0
         repeat(count) {
             try {
                 val frame = gatt.request(
                     OlleeProtocol.CMD_REC_FETCH, timeoutMs = 4_000, retries = 1,
                 )
-                OlleeProtocol.parseRecord(frame.payload)?.let { records.add(it) }
-                consecutiveMisses = 0
+                val record = OlleeProtocol.parseRecord(frame.payload)
+                    ?: return@burst RecordSyncResult(
+                        records, count, drained = false, acknowledged = false,
+                    )
+                records.add(record)
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
-                // A live link occasionally drops a single record reply; skip it
-                // rather than losing the whole batch. Bail (as a dead link) only
-                // if many in a row fail.
-                if (++consecutiveMisses >= MAX_FETCH_MISSES) throw LinkDeadException(e)
+            } catch (_: Exception) {
+                // We cannot prove whether a missed response advanced the watch's
+                // queue. Stop immediately and deliberately do not acknowledge.
+                return@burst RecordSyncResult(
+                    records, count, drained = false, acknowledged = false,
+                )
             }
         }
-        // Best-effort ack; don't fail the sync if it's missed (but do honour
-        // cancellation rather than swallowing it via runCatching).
-        try {
+
+        val acknowledged = try {
             gatt.request(OlleeProtocol.CMD_SYNC_DONE, timeoutMs = 1_500)
+            true
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            // ignore
+            false
         }
-        records
+        RecordSyncResult(records, count, drained = true, acknowledged = acknowledged)
     }
 
     /**
@@ -91,8 +103,11 @@ class OlleeRepository(val gatt: OlleeGattManager) {
      * wake can be slow, so it gets a generous window and extra retries.
      */
     private suspend fun countRecords(): Int = try {
-        gatt.request(OlleeProtocol.CMD_REC_COUNT, timeoutMs = 5_000, retries = 2)
-            .payload.beInt(4)
+        val payload = gatt.request(
+            OlleeProtocol.CMD_REC_COUNT, timeoutMs = 5_000, retries = 2,
+        ).payload
+        if (payload.size < 4) throw IOException("invalid record-count response")
+        payload.beInt(4)
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {

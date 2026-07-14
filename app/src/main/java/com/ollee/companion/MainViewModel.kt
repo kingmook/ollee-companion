@@ -14,6 +14,7 @@ import com.ollee.companion.ble.ConnectionState
 import com.ollee.companion.ble.LinkDeadException
 import com.ollee.companion.ble.OlleeProtocol
 import com.ollee.companion.data.RecordStore
+import com.ollee.companion.data.RecordStoreException
 import com.ollee.companion.feature.SunCalculator
 import com.ollee.companion.feature.SunTimes
 import kotlinx.coroutines.CancellationException
@@ -142,7 +143,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         // Show stored history immediately, before any connection.
         viewModelScope.launch {
-            applyRecords(withContext(Dispatchers.IO) { store.loadAll() })
+            try {
+                applyRecords(withContext(Dispatchers.IO) { store.loadAll() })
+            } catch (e: RecordStoreException) {
+                setMessage(e.message ?: "Stored health history could not be read.")
+            }
         }
         // On launch, auto-connect to the last successfully connected watch.
         lastAddress?.let { connect(it) }
@@ -385,22 +390,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // already-running auto-sync rather than racing past it.
             _ui.update { it.copy(syncing = true) }
             try {
-                val recs = try {
+                val sync = try {
                     repo.syncRecords()
                 } catch (e: LinkDeadException) {
                     // Only a genuinely dead link (not a mid-drain hiccup) forces
                     // a clean reconnect and one retry before giving up.
                     if (recover && reconnectFresh()) repo.syncRecords() else throw e
                 }
-                val all = withContext(Dispatchers.IO) { store.merge(recs) }
+                val all = withContext(Dispatchers.IO) { store.merge(sync.records) }
                 applyRecords(all)
-                if (announce) {
-                    setMessage("Synced ${recs.size} records (${all.size} kept, 30 days).")
+                when {
+                    !sync.drained -> setMessage(
+                        "Saved ${sync.records.size} of ${sync.expectedCount} records; " +
+                            "the watch log was not acknowledged. Retry the sync.",
+                    )
+                    !sync.acknowledged -> setMessage(
+                        "Saved ${sync.records.size} records, but the watch did not confirm cleanup. " +
+                            "A retry is safe; duplicates are ignored.",
+                    )
+                    announce -> setMessage(
+                        "Synced ${sync.records.size} records (${all.size} kept, 30 days).",
+                    )
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (announce) setMessage("Records sync failed: ${e.message}")
+                if (announce || e is RecordStoreException) {
+                    setMessage("Records sync failed: ${e.message}")
+                }
             } finally {
                 _ui.update { it.copy(syncing = false) }
             }

@@ -5,6 +5,14 @@ import com.ollee.companion.ble.OlleeProtocol
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.nio.charset.StandardCharsets
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+
+class RecordStoreException(message: String, cause: Throwable) : IOException(message, cause)
 
 /**
  * Persists synced watch records to a JSON file in app storage, deduplicated and
@@ -23,7 +31,11 @@ class RecordStore(context: Context, private val retentionDays: Int = 30) {
     @Synchronized
     fun loadAll(): List<OlleeProtocol.Record> {
         if (!file.exists()) return emptyList()
-        return runCatching { parse(file.readText()) }.getOrDefault(emptyList())
+        return try {
+            parse(file.readText())
+        } catch (e: Exception) {
+            throw RecordStoreException("Stored health history could not be read", e)
+        }
     }
 
     /** Merge new records in, prune anything older than the window, persist, return all. */
@@ -36,8 +48,31 @@ class RecordStore(context: Context, private val retentionDays: Int = 30) {
             byKey[key(r)] = r
         }
         val merged = byKey.values.sortedByDescending { it.tStart }
-        runCatching { file.writeText(serialize(merged)) }
+        writeAtomically(serialize(merged))
         return merged
+    }
+
+    private fun writeAtomically(text: String) {
+        val temp = File(file.parentFile, "${file.name}.tmp")
+        try {
+            FileOutputStream(temp).use { output ->
+                output.write(text.toByteArray(StandardCharsets.UTF_8))
+                output.fd.sync()
+            }
+            try {
+                Files.move(
+                    temp.toPath(), file.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+        } catch (e: Exception) {
+            throw RecordStoreException("Health history could not be saved", e)
+        } finally {
+            temp.delete()
+        }
     }
 
     private fun key(r: OlleeProtocol.Record) = "${r.type}:${r.tStart}:${r.tEnd}"

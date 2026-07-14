@@ -5,6 +5,8 @@ import com.ollee.companion.ble.OlleeProtocol
 import io.mockk.every
 import io.mockk.mockk
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -63,5 +65,25 @@ class RecordStoreTest {
         
         assertEquals(1, loaded.size)
         assertEquals(newRecord.tStart, loaded[0].tStart)
+    }
+
+    @Test
+    fun corruptHistoryIsReportedInsteadOfSilentlyDiscarded() {
+        File(filesDir, "records.json").writeText("not valid json")
+
+        assertThrows(RecordStoreException::class.java) { store.loadAll() }
+    }
+
+    @Test
+    fun mergeAtomicallyReplacesHistoryAndRemovesTemporaryFile() {
+        val now = System.currentTimeMillis() / 1000
+        val first = OlleeProtocol.Record(OlleeProtocol.REC_STEPS, now - 20, now - 10, 10)
+        val second = OlleeProtocol.Record(OlleeProtocol.REC_STEPS, now - 10, now, 20)
+
+        store.merge(listOf(first))
+        store.merge(listOf(second))
+
+        assertEquals(listOf(second, first), store.loadAll())
+        assertFalse(File(filesDir, "records.json.tmp").exists())
     }
 }
