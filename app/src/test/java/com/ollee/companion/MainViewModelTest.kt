@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -30,12 +31,14 @@ class MainViewModelTest {
     private lateinit var repo: OlleeRepository
     private lateinit var viewModel: MainViewModel
     private lateinit var viewModelStore: ViewModelStore
+    private lateinit var testDispatcher: TestDispatcher
     
     private val connectionStateFlow = MutableStateFlow(ConnectionState.DISCONNECTED)
 
     @Before
     fun setup() {
-        Dispatchers.setMain(StandardTestDispatcher())
+        testDispatcher = StandardTestDispatcher()
+        Dispatchers.setMain(testDispatcher)
         
         app = mockk(relaxed = true)
         repo = mockk(relaxed = true)
@@ -52,7 +55,7 @@ class MainViewModelTest {
         val factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                MainViewModel(app) as T
+                MainViewModel(app, testDispatcher, periodicSyncEnabled = false) as T
         }
         viewModel = ViewModelProvider(viewModelStore, factory)[MainViewModel::class.java]
     }
@@ -63,6 +66,7 @@ class MainViewModelTest {
         // while the test Main dispatcher is still installed.
         try {
             viewModelStore.clear()
+            testDispatcher.scheduler.runCurrent()
         } finally {
             Dispatchers.resetMain()
         }

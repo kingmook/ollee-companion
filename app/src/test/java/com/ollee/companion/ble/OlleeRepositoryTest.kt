@@ -12,7 +12,6 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
 import java.io.IOException
@@ -117,9 +116,28 @@ class OlleeRepositoryTest {
             gatt.request(OlleeProtocol.CMD_REC_COUNT, any(), 5_000, 2)
         } returns frame(OlleeProtocol.CMD_REC_COUNT, byteArrayOf(0))
 
-        assertThrows(LinkDeadException::class.java) {
-            kotlinx.coroutines.runBlocking { repo.syncRecords() }
+        val result = repo.syncRecords()
+
+        assertEquals(false, result.drained)
+        assertEquals(false, result.acknowledged)
+        assertEquals(true, result.failure?.contains("record count") == true)
+        coVerify(exactly = 0) {
+            gatt.request(OlleeProtocol.CMD_SYNC_DONE, any(), any(), any())
         }
+    }
+
+    @Test
+    fun recordCountTimeoutDoesNotDisconnectTheWatch() = runTest {
+        runBurstBlocks()
+        coEvery {
+            gatt.request(OlleeProtocol.CMD_REC_COUNT, any(), 5_000, 2)
+        } throws IOException("timeout waiting for record count")
+
+        val result = repo.syncRecords()
+
+        assertEquals(false, result.drained)
+        assertEquals(true, result.failure?.contains("timeout") == true)
+        coVerify(exactly = 0) { gatt.disconnect() }
         coVerify(exactly = 0) {
             gatt.request(OlleeProtocol.CMD_SYNC_DONE, any(), any(), any())
         }

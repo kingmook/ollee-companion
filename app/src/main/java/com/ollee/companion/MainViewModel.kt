@@ -11,13 +11,13 @@ import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ollee.companion.ble.ConnectionState
-import com.ollee.companion.ble.LinkDeadException
 import com.ollee.companion.ble.OlleeProtocol
 import com.ollee.companion.data.RecordStore
 import com.ollee.companion.data.RecordStoreException
 import com.ollee.companion.feature.SunCalculator
 import com.ollee.companion.feature.SunTimes
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -75,7 +75,11 @@ data class UiState(
     val message: String? = null,
 )
 
-class MainViewModel(app: Application) : AndroidViewModel(app) {
+class MainViewModel @JvmOverloads constructor(
+    app: Application,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val periodicSyncEnabled: Boolean = true,
+) : AndroidViewModel(app) {
 
     private val repo = (app as OlleeApp).repository
     private val store = RecordStore(app)
@@ -101,10 +105,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** True only when the user taps Disconnect, to suppress auto-reconnect. */
     private var userDisconnect = false
-    private var reconnectingClearJob: Job? = null
-    // How long to keep the watch screen up (with a "Reconnecting…" banner)
-    // during an auto-reconnect before falling back to the connect panel.
-    private val reconnectingGrace = 15.seconds
 
     /** Serializes syncs so a resume-verify can await an in-flight auto-sync. */
     private val syncMutex = Mutex()
@@ -129,7 +129,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         pendingAddress?.let { addr ->
                             prefs.edit { putString(lastAddressKey, addr) }
                         }
-                        reconnectingClearJob?.cancel()
                         _ui.update { it.copy(reconnecting = false) }
                         startAutoSync()
                     }
@@ -144,7 +143,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // Show stored history immediately, before any connection.
         viewModelScope.launch {
             try {
-                applyRecords(withContext(Dispatchers.IO) { store.loadAll() })
+                applyRecords(withContext(ioDispatcher) { store.loadAll() })
             } catch (e: RecordStoreException) {
                 setMessage(e.message ?: "Stored health history could not be read.")
             }
@@ -213,7 +212,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun disconnect() {
         userDisconnect = true
-        reconnectingClearJob?.cancel()
         _ui.update { it.copy(reconnecting = false) }
         viewModelScope.launch { repo.disconnect() }
         OlleeConnectionService.stop(getApplication())
@@ -227,16 +225,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun maybeAutoReconnect() {
         if (userDisconnect) return
         if (lastAddress == null) return
-        // Keep the watch screen up (with a banner) instead of flashing the
-        // connect panel, but fall back to it if reconnection drags on.
+        // Keep the watch screen and Disconnect action available throughout the
+        // reconnect instead of falling back to the scan UI after a timeout.
         _ui.update { it.copy(reconnecting = true) }
-        reconnectingClearJob?.cancel()
-        reconnectingClearJob = viewModelScope.launch {
-            delay(reconnectingGrace)
-            if (repo.connectionState.value != ConnectionState.READY) {
-                _ui.update { it.copy(reconnecting = false) }
-            }
-        }
         // The actual reconnection loop is handled by OlleeConnectionService
         // while it is running, to ensure persistence even if the app is
         // backgrounded/swiped away.
@@ -326,6 +317,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             catching { repo.syncTime() }
             refreshInternal()
             setMessage("Synced time with watch.")
+            if (!periodicSyncEnabled) return@launch
             while (isActive) {
                 delay(autoSyncInterval)
                 fullSync()
@@ -337,9 +329,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun fullSync() {
         catching { repo.syncTime() }
         refreshInternal()
-        // recover=false: this runs on autoSyncJob, which a reconnect would
-        // cancel from under us. The periodic loop just retries next cycle.
-        doRecordsSync(announce = false, recover = false)
+        doRecordsSync(announce = false)
     }
 
     private fun stopAutoSync() {
@@ -384,25 +374,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Drain the watch's log, merge into 30-day storage, and refresh history. */
     fun syncRecords() = viewModelScope.launch { doRecordsSync(announce = true) }
 
-    private suspend fun doRecordsSync(announce: Boolean, recover: Boolean = true) =
+    private suspend fun doRecordsSync(announce: Boolean) =
         syncMutex.withLock {
             // Serialized (not skipped): a resume-verify must be able to await an
             // already-running auto-sync rather than racing past it.
             _ui.update { it.copy(syncing = true) }
             try {
-                val sync = try {
-                    repo.syncRecords()
-                } catch (e: LinkDeadException) {
-                    // Only a genuinely dead link (not a mid-drain hiccup) forces
-                    // a clean reconnect and one retry before giving up.
-                    if (recover && reconnectFresh()) repo.syncRecords() else throw e
-                }
-                val all = withContext(Dispatchers.IO) { store.merge(sync.records) }
+                val sync = repo.syncRecords()
+                val all = withContext(ioDispatcher) { store.merge(sync.records) }
                 applyRecords(all)
                 when {
                     !sync.drained -> setMessage(
-                        "Saved ${sync.records.size} of ${sync.expectedCount} records; " +
-                            "the watch log was not acknowledged. Retry the sync.",
+                        (sync.failure ?: "Health record sync did not complete") + ". " +
+                            "The watch log was not acknowledged; retry the sync.",
                     )
                     !sync.acknowledged -> setMessage(
                         "Saved ${sync.records.size} records, but the watch did not confirm cleanup. " +
@@ -422,15 +406,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _ui.update { it.copy(syncing = false) }
             }
         }
-
-    /** Drop the link and wait for auto-reconnect to bring up a fresh one. */
-    private suspend fun reconnectFresh(): Boolean {
-        repo.disconnect()
-        return withTimeoutOrNull(verifyBudget) {
-            repo.connectionState.first { it == ConnectionState.READY }
-            true
-        } == true
-    }
 
     /** Split stored records into per-type history and daily summaries. */
     private fun applyRecords(all: List<OlleeProtocol.Record>) {

@@ -1,19 +1,19 @@
 package com.ollee.companion.ble
 
+import android.util.Log
 import kotlinx.coroutines.CancellationException
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 
-/** Thrown when the link looks dead (a command can't be reached at all). */
-class LinkDeadException(cause: Throwable) : IOException(cause.message, cause)
-
 private const val MAX_RECORDS = 5_000        // sanity cap on a (possibly garbage) count
+private const val TAG = "OlleeRepository"
 
 data class RecordSyncResult(
     val records: List<OlleeProtocol.Record>,
     val expectedCount: Int,
     val drained: Boolean,
     val acknowledged: Boolean,
+    val failure: String? = null,
 )
 
 /** High-level Ollee API built on [OlleeGattManager]. */
@@ -60,41 +60,73 @@ class OlleeRepository(val gatt: OlleeGattManager) {
      * watch's power-saving connection interval.
      */
     suspend fun syncRecords(): RecordSyncResult = gatt.burst {
-        val count = countRecords()
+        val count = try {
+            countRecords()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val reason = "Could not read the watch record count: ${e.message ?: "unknown error"}"
+            Log.w(TAG, reason, e)
+            return@burst RecordSyncResult(
+                emptyList(), expectedCount = 0, drained = false,
+                acknowledged = false, failure = reason,
+            )
+        }
         if (count !in 0..MAX_RECORDS) {
-            return@burst RecordSyncResult(emptyList(), count, drained = false, acknowledged = false)
+            val reason = "Watch returned an invalid record count: $count"
+            Log.w(TAG, reason)
+            return@burst RecordSyncResult(
+                emptyList(), count, drained = false, acknowledged = false, failure = reason,
+            )
         }
         val records = ArrayList<OlleeProtocol.Record>(count)
-        repeat(count) {
+        repeat(count) { index ->
             try {
                 val frame = gatt.request(
                     OlleeProtocol.CMD_REC_FETCH, timeoutMs = 4_000, retries = 1,
                 )
                 val record = OlleeProtocol.parseRecord(frame.payload)
-                    ?: return@burst RecordSyncResult(
-                        records, count, drained = false, acknowledged = false,
+                if (record == null) {
+                    val reason = "Watch returned a malformed record at ${index + 1} of $count"
+                    Log.w(TAG, reason)
+                    return@burst RecordSyncResult(
+                        records, count, drained = false,
+                        acknowledged = false, failure = reason,
                     )
+                }
                 records.add(record)
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
+            } catch (e: Exception) {
                 // We cannot prove whether a missed response advanced the watch's
                 // queue. Stop immediately and deliberately do not acknowledge.
+                val reason = "Record fetch ${index + 1} of $count failed: " +
+                    (e.message ?: "unknown error")
+                Log.w(TAG, reason, e)
                 return@burst RecordSyncResult(
-                    records, count, drained = false, acknowledged = false,
+                    records, count, drained = false,
+                    acknowledged = false, failure = reason,
                 )
             }
         }
 
+        var acknowledgementFailure: String? = null
         val acknowledged = try {
             gatt.request(OlleeProtocol.CMD_SYNC_DONE, timeoutMs = 1_500)
             true
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            val reason = "Watch did not confirm record cleanup: " +
+                (e.message ?: "unknown error")
+            acknowledgementFailure = reason
+            Log.w(TAG, reason, e)
             false
         }
-        RecordSyncResult(records, count, drained = true, acknowledged = acknowledged)
+        RecordSyncResult(
+            records, count, drained = true, acknowledged = acknowledged,
+            failure = acknowledgementFailure,
+        )
     }
 
     /**
@@ -102,16 +134,12 @@ class OlleeRepository(val gatt: OlleeGattManager) {
      * if it can't be reached, the link is dead. The first command after an idle
      * wake can be slow, so it gets a generous window and extra retries.
      */
-    private suspend fun countRecords(): Int = try {
+    private suspend fun countRecords(): Int {
         val payload = gatt.request(
             OlleeProtocol.CMD_REC_COUNT, timeoutMs = 5_000, retries = 2,
         ).payload
         if (payload.size < 4) throw IOException("invalid record-count response")
-        payload.beInt(4)
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        throw LinkDeadException(e)
+        return payload.beInt(4)
     }
 
     // --- Alarm -------------------------------------------------------------
