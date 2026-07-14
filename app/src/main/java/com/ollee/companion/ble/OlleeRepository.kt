@@ -2,12 +2,14 @@ package com.ollee.companion.ble
 
 import android.util.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 
 private const val MAX_RECORDS = 5_000        // sanity cap on a (possibly garbage) count
+private const val CLEANUP_SETTLE_MS = 300L
 private const val TAG = "OlleeRepository"
 
 data class RecordSyncResult(
@@ -94,6 +96,14 @@ class OlleeRepository(val gatt: OlleeGattManager) {
                 emptyList(), count, drained = false, acknowledged = false, failure = reason,
             )
         }
+        // No cleanup command is needed for an empty log. Confirmed on firmware
+        // 5.0000.01.10: it returns count=0 but does not emit a 0x4d response.
+        if (count == 0) {
+            return@burst RecordSyncResult(
+                emptyList(), expectedCount = 0, drained = true,
+                acknowledged = true,
+            )
+        }
         val records = ArrayList<OlleeProtocol.Record>(count)
         repeat(count) { index ->
             try {
@@ -125,22 +135,35 @@ class OlleeRepository(val gatt: OlleeGattManager) {
             }
         }
 
-        var acknowledgementFailure: String? = null
-        val acknowledged = try {
-            gatt.request(OlleeProtocol.CMD_SYNC_DONE, timeoutMs = 1_500)
-            true
+        var cleanupFailure: String? = null
+        val cleanupConfirmed = try {
+            // This firmware accepts 0x2d at the ATT layer but does not reliably
+            // send the presumed 0x4d application response. Send it exactly once,
+            // then verify the actual queue state instead of retrying a destructive
+            // command merely because an optional response was absent.
+            gatt.send(OlleeProtocol.buildFrame(OlleeProtocol.CMD_SYNC_DONE))
+            delay(CLEANUP_SETTLE_MS)
+            val remaining = countRecords()
+            if (remaining == 0) {
+                true
+            } else {
+                val reason = "Watch still reports $remaining records after cleanup"
+                cleanupFailure = reason
+                Log.w(TAG, reason)
+                false
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            val reason = "Watch did not confirm record cleanup: " +
+            val reason = "Could not verify record cleanup: " +
                 (e.message ?: "unknown error")
-            acknowledgementFailure = reason
+            cleanupFailure = reason
             Log.w(TAG, reason, e)
             false
         }
         RecordSyncResult(
-            records, count, drained = true, acknowledged = acknowledged,
-            failure = acknowledgementFailure,
+            records, count, drained = true, acknowledged = cleanupConfirmed,
+            failure = cleanupFailure,
         )
     }
 

@@ -62,15 +62,19 @@ class OlleeRepositoryTest {
     @Test
     fun completeRecordDrainIsAcknowledged() = runTest {
         runBurstBlocks()
+        var countReads = 0
         coEvery {
             gatt.request(OlleeProtocol.CMD_REC_COUNT, any(), 5_000, 2)
-        } returns frame(OlleeProtocol.CMD_REC_COUNT, intPayload(1))
+        } coAnswers {
+            frame(
+                OlleeProtocol.CMD_REC_COUNT,
+                intPayload(if (countReads++ == 0) 1 else 0),
+            )
+        }
         coEvery {
             gatt.request(OlleeProtocol.CMD_REC_FETCH, any(), 4_000, 1)
         } returns frame(OlleeProtocol.CMD_REC_FETCH, recordPayload(value = 123))
-        coEvery {
-            gatt.request(OlleeProtocol.CMD_SYNC_DONE, any(), 1_500, any())
-        } returns frame(OlleeProtocol.CMD_SYNC_DONE)
+        coEvery { gatt.send(any()) } returns Unit
 
         val result = repo.syncRecords()
 
@@ -80,8 +84,52 @@ class OlleeRepositoryTest {
         coVerifyOrder {
             gatt.request(OlleeProtocol.CMD_REC_COUNT, any(), 5_000, 2)
             gatt.request(OlleeProtocol.CMD_REC_FETCH, any(), 4_000, 1)
-            gatt.request(OlleeProtocol.CMD_SYNC_DONE, any(), 1_500, any())
+            gatt.send(any())
+            gatt.request(OlleeProtocol.CMD_REC_COUNT, any(), 5_000, 2)
         }
+    }
+
+    @Test
+    fun emptyRecordLogSucceedsWithoutCleanupCommand() = runTest {
+        runBurstBlocks()
+        coEvery {
+            gatt.request(OlleeProtocol.CMD_REC_COUNT, any(), 5_000, 2)
+        } returns frame(OlleeProtocol.CMD_REC_COUNT, intPayload(0))
+
+        val result = repo.syncRecords()
+
+        assertEquals(true, result.drained)
+        assertEquals(true, result.acknowledged)
+        assertEquals(0, result.records.size)
+        coVerify(exactly = 0) { gatt.send(any()) }
+        coVerify(exactly = 0) {
+            gatt.request(OlleeProtocol.CMD_REC_FETCH, any(), any(), any())
+        }
+    }
+
+    @Test
+    fun cleanupThatLeavesRecordsIsNotAcknowledged() = runTest {
+        runBurstBlocks()
+        var countReads = 0
+        coEvery {
+            gatt.request(OlleeProtocol.CMD_REC_COUNT, any(), 5_000, 2)
+        } coAnswers {
+            frame(
+                OlleeProtocol.CMD_REC_COUNT,
+                intPayload(if (countReads++ == 0) 1 else 1),
+            )
+        }
+        coEvery {
+            gatt.request(OlleeProtocol.CMD_REC_FETCH, any(), 4_000, 1)
+        } returns frame(OlleeProtocol.CMD_REC_FETCH, recordPayload(value = 456))
+        coEvery { gatt.send(any()) } returns Unit
+
+        val result = repo.syncRecords()
+
+        assertEquals(true, result.drained)
+        assertEquals(false, result.acknowledged)
+        assertEquals(true, result.failure?.contains("still reports 1") == true)
+        coVerify(exactly = 1) { gatt.send(any()) }
     }
 
     @Test
@@ -105,7 +153,7 @@ class OlleeRepositoryTest {
         assertEquals(2, result.expectedCount)
         assertEquals(321, result.records.single().value)
         coVerify(exactly = 0) {
-            gatt.request(OlleeProtocol.CMD_SYNC_DONE, any(), any(), any())
+            gatt.send(any())
         }
     }
 
@@ -122,7 +170,7 @@ class OlleeRepositoryTest {
         assertEquals(false, result.acknowledged)
         assertEquals(true, result.failure?.contains("record count") == true)
         coVerify(exactly = 0) {
-            gatt.request(OlleeProtocol.CMD_SYNC_DONE, any(), any(), any())
+            gatt.send(any())
         }
     }
 
@@ -139,7 +187,7 @@ class OlleeRepositoryTest {
         assertEquals(true, result.failure?.contains("timeout") == true)
         coVerify(exactly = 0) { gatt.disconnect() }
         coVerify(exactly = 0) {
-            gatt.request(OlleeProtocol.CMD_SYNC_DONE, any(), any(), any())
+            gatt.send(any())
         }
     }
 

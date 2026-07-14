@@ -56,7 +56,9 @@ MainActivity.kt       Compose UI
 
 A full sync drains the watch log: `0x27` returns the record count, then each
 `0x28` returns one 16-byte record `[type:4][tStart:4][tEnd:4][value:4]` (all
-big-endian Unix-second timestamps), and `0x2d` acknowledges. Types: `0` steps
+big-endian Unix-second timestamps), and `0x2d` finalizes a non-empty drain.
+Cleanup is verified by reading the remaining count because some firmware does
+not return the presumed `0x4d` response. Types: `0` steps
 (value = steps in interval), `1` temperature (hourly window, value = °C × 100),
 `2` heart rate (instantaneous, value = bpm).
 

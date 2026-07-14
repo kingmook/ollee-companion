@@ -51,7 +51,7 @@ object OlleeProtocol {
     // Health/activity record log (drained on a full sync).
     const val CMD_REC_COUNT = 0x27   // -> 0x47: uint32 count of records waiting
     const val CMD_REC_FETCH = 0x28   // -> 0x48: one record; poll to drain the log
-    const val CMD_SYNC_DONE = 0x2D   // -> 0x4D: finalize/ack after reading records
+    const val CMD_SYNC_DONE = 0x2D   // finalize after reading; 0x4D is firmware-dependent
 
     const val REC_STEPS = 0          // value = steps in [tStart, tEnd]
     const val REC_TEMPERATURE = 1    // hourly window; value = centi-degrees C
