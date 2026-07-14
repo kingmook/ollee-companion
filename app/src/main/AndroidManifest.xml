@@ -15,8 +15,6 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-
     <!-- Foreground service to keep the BLE link alive in the background.
          Justification: The app maintains a persistent Bluetooth connection to the watch
          to sync health records and manage device settings. -->

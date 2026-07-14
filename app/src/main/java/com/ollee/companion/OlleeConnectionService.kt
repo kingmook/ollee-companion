@@ -10,15 +10,17 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
-import android.os.PowerManager
 import androidx.core.content.ContextCompat
 import com.ollee.companion.ble.ConnectionState
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.seconds
 
@@ -34,17 +36,13 @@ class OlleeConnectionService : Service() {
     // recommended for Service tasks that aren't heavy computation.
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var reconnectJob: Job? = null
-    private val reconnectDelay = 3.seconds
-
-    private var wakeLock: PowerManager.WakeLock? = null
+    private val initialReconnectDelay = 3.seconds
+    private val maximumReconnectDelay = 60.seconds
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        // Hold a wake lock for the entire life of the service.
-        acquireWakeLock()
-        
         createChannel()
         startForegroundCompat()
 
@@ -73,17 +71,31 @@ class OlleeConnectionService : Service() {
     private fun scheduleReconnect() {
         if (reconnectJob?.isActive == true) return
         reconnectJob = scope.launch {
-            delay(reconnectDelay)
             val prefs = getSharedPreferences("ollee_prefs", MODE_PRIVATE)
             val addr = prefs.getString("last_address", null) ?: return@launch
             val repo = (application as OlleeApp).repository
-            
-            // Background reconnection uses autoConnect=true so the OS keeps
-            // looking at low power until the watch is in range.
-            if (repo.connectionState.value == ConnectionState.DISCONNECTED) {
-                runCatching { 
-                    repo.connect(addr, autoConnect = true, timeoutMs = 24 * 3600_000L) 
+
+            var retryDelay = initialReconnectDelay
+            while (currentCoroutineContext().isActive) {
+                delay(retryDelay)
+                when (repo.connectionState.value) {
+                    ConnectionState.READY -> return@launch
+                    ConnectionState.CONNECTING -> continue
+                    ConnectionState.DISCONNECTED -> Unit
                 }
+
+                // Each attempt is bounded so a wedged Android GATT operation
+                // cannot stall reconnection indefinitely. autoConnect keeps an
+                // individual attempt power-efficient while the watch is away.
+                try {
+                    repo.connect(addr, autoConnect = true, timeoutMs = 45_000L)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // The next loop iteration retries with a longer delay.
+                }
+                if (repo.connectionState.value == ConnectionState.READY) return@launch
+                retryDelay = (retryDelay * 2).coerceAtMost(maximumReconnectDelay)
             }
         }
     }
@@ -92,23 +104,7 @@ class OlleeConnectionService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
-        releaseWakeLock()
         super.onDestroy()
-    }
-
-    private fun acquireWakeLock() {
-        if (wakeLock?.isHeld == true) return
-        val pm = getSystemService(POWER_SERVICE) as PowerManager
-        // Ensure the wake lock stays active even if the service is restarted.
-        if (wakeLock == null) {
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Ollee:ConnectionService")
-        }
-        wakeLock?.acquire()
-    }
-
-    private fun releaseWakeLock() {
-        wakeLock?.takeIf { it.isHeld }?.release()
-        wakeLock = null
     }
 
     private fun startForegroundCompat() {

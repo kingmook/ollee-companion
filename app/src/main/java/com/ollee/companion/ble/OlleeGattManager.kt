@@ -12,7 +12,6 @@ import android.content.Context
 import android.os.Build
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
@@ -31,7 +30,6 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -61,9 +59,9 @@ class OlleeGattManager(private val context: Context) {
     // Dedicated single-threaded dispatcher for all GATT operations and callbacks.
     // This prevents main-thread blocking and ensures serialized access to the BLE stack.
     private val gattDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
-    // Separate scope for GATT operations (background) and response processing (high priority).
+    // All mutable transport state, including frame reassembly, lives on this
+    // dispatcher. Bluetooth callbacks may arrive on arbitrary binder threads.
     private val scope = CoroutineScope(gattDispatcher + SupervisorJob())
-    private val notifyScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     
     private var keepAliveJob: Job? = null
     private val keepAliveInterval = 12.seconds
@@ -73,25 +71,26 @@ class OlleeGattManager(private val context: Context) {
 
     private val callback = object : android.bluetooth.BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            // Process state changes on the Main dispatcher. The Main thread
-            // is less likely to be throttled by the OS while a foreground 
-            // service is active.
-            CoroutineScope(Dispatchers.Main).launch {
-                if ((gatt != null) && (g !== gatt)) {
+            scope.launch {
+                if (!isActiveGatt(g)) {
                     g.close()
                     return@launch
                 }
                 
-                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
                     // Larger MTU can help with stability and faster data transfer.
                     g.requestMtu(256)
                     delay(600.milliseconds)
-                    g.discoverServices()
+                    if (!g.discoverServices()) {
+                        failConnection(g, IOException("service discovery failed to start"))
+                    }
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     val msg = if (status != 0) "disconnected (status=$status)" else "disconnected"
                     readyDeferred?.takeIf { !it.isCompleted }
                         ?.completeExceptionally(IOException(msg))
                     cleanup()
+                } else if (status != BluetoothGatt.GATT_SUCCESS) {
+                    failConnection(g, IOException("connection failed (status=$status)"))
                 }
             }
         }
@@ -101,28 +100,37 @@ class OlleeGattManager(private val context: Context) {
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            CoroutineScope(Dispatchers.Main).launch {
+            scope.launch {
+                if (!isActiveGatt(g)) return@launch
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    readyDeferred?.completeExceptionally(IOException("discovery failed $status"))
+                    failConnection(g, IOException("service discovery failed (status=$status)"))
                     return@launch
                 }
                 val tx = g.getService(OlleeProtocol.NUS_SERVICE)
                     ?.getCharacteristic(OlleeProtocol.NUS_TX)
                 if (tx == null) {
-                    readyDeferred?.completeExceptionally(IOException("NUS not found"))
+                    failConnection(g, IOException("Nordic UART TX characteristic not found"))
                     return@launch
                 }
-                g.setCharacteristicNotification(tx, true)
+                if (!g.setCharacteristicNotification(tx, true)) {
+                    failConnection(g, IOException("enabling local notifications failed"))
+                    return@launch
+                }
                 val cccd = tx.getDescriptor(OlleeProtocol.CCCD)
+                if (cccd == null) {
+                    failConnection(g, IOException("Nordic UART notification descriptor not found"))
+                    return@launch
+                }
                 writeCccdEnable(g, cccd)
             }
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
-            CoroutineScope(Dispatchers.Main).launch {
+            scope.launch {
+                if (!isActiveGatt(g)) return@launch
                 if (d.uuid != OlleeProtocol.CCCD) return@launch
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    readyDeferred?.completeExceptionally(IOException("CCCD failed $status"))
+                    failConnection(g, IOException("notification descriptor write failed (status=$status)"))
                     return@launch
                 }
                 _state.value = ConnectionState.READY
@@ -138,6 +146,7 @@ class OlleeGattManager(private val context: Context) {
             g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int,
         ) {
             scope.launch {
+                if (!isActiveGatt(g)) return@launch
                 val d = pendingWrite
                 pendingWrite = null
                 if (status == BluetoothGatt.GATT_SUCCESS) d?.complete(Unit)
@@ -147,27 +156,36 @@ class OlleeGattManager(private val context: Context) {
 
         override fun onCharacteristicChanged(
             g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray,
-        ) = handleNotify(value)
+        ) = handleNotify(g, value)
 
         @Deprecated("Deprecated in API 33")
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
-            handleNotify(c.value ?: ByteArray(0))
+            handleNotify(g, c.value ?: ByteArray(0))
         }
     }
 
-    private fun handleNotify(value: ByteArray) {
-        // Process incoming notifications on a separate, high-priority scope.
-        // If we process these on the same gattDispatcher used for writes,
-        // a slow write or background throttling can delay the response 
-        // processing enough to trigger a request timeout.
-        notifyScope.launch {
-            for (frame in reasm.feed(value)) {
+    private fun handleNotify(source: BluetoothGatt, value: ByteArray) {
+        // A single dispatcher preserves BLE notification order and protects the
+        // mutable reassembler. Copy because pre-33 characteristic values may be
+        // backed by a buffer that Android reuses after the callback returns.
+        val bytes = value.copyOf()
+        scope.launch {
+            if (!isActiveGatt(source)) return@launch
+            for (frame in reasm.feed(bytes)) {
                 if (!frame.crcOk) continue
                 frames.tryEmit(frame)
                 waiters.remove(frame.cmd)?.complete(frame)
             }
         }
+    }
+
+    private fun isActiveGatt(candidate: BluetoothGatt): Boolean = candidate === gatt
+
+    private fun failConnection(source: BluetoothGatt, error: IOException) {
+        if (!isActiveGatt(source)) return
+        readyDeferred?.takeIf { !it.isCompleted }?.completeExceptionally(error)
+        cleanup()
     }
 
     /**
@@ -219,6 +237,10 @@ class OlleeGattManager(private val context: Context) {
             if (!it.isCompleted) it.completeExceptionally(IOException("disconnected")) 
         }
         waiters.clear()
+        pendingWrite?.takeIf { !it.isCompleted }
+            ?.completeExceptionally(IOException("disconnected"))
+        pendingWrite = null
+        readyDeferred = null
         _state.value = ConnectionState.DISCONNECTED
     }
 
@@ -288,11 +310,13 @@ class OlleeGattManager(private val context: Context) {
         repeat(retries + 1) {
             val deferred = CompletableDeferred<OlleeProtocol.Frame>()
             waiters[respCmd] = deferred
-            writeFrame(frame)
-            val result = withTimeoutOrNull(timeoutMs.milliseconds) { deferred.await() }
+            val result = try {
+                writeFrame(frame)
+                withTimeoutOrNull(timeoutMs.milliseconds) { deferred.await() }
+            } finally {
+                waiters.remove(respCmd, deferred)
+            }
             if (result != null) return@withLock result
-            
-            waiters.remove(respCmd)
             lastError = IOException("timeout waiting for 0x${respCmd.toString(16)}")
         }
         throw lastError ?: IOException("request failed")
@@ -342,15 +366,19 @@ class OlleeGattManager(private val context: Context) {
         }
     }
 
-    private fun writeCccdEnable(g: BluetoothGatt, d: BluetoothGattDescriptor?) {
-        d ?: return
+    private fun writeCccdEnable(g: BluetoothGatt, d: BluetoothGattDescriptor) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            g.writeDescriptor(d, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+            val rc = g.writeDescriptor(d, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+            if (rc != BluetoothStatusCodes.SUCCESS) {
+                failConnection(g, IOException("notification descriptor write failed to start (rc=$rc)"))
+            }
         } else {
             @Suppress("DEPRECATION")
             run {
                 d.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                g.writeDescriptor(d)
+                if (!g.writeDescriptor(d)) {
+                    failConnection(g, IOException("notification descriptor write failed to start"))
+                }
             }
         }
     }

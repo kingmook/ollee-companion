@@ -55,4 +55,30 @@ class OlleeProtocolTest {
         assertTrue(decoded.crcOk)
         assertArrayEquals(byteArrayOf(0x01, 0x02), decoded.payload)
     }
+
+    @Test
+    fun reassemblerHandlesEveryFragmentBoundaryInOrder() {
+        val first = OlleeProtocol.buildFrame(OlleeProtocol.CMD_INFO, byteArrayOf(1, 2, 3))
+        val second = OlleeProtocol.buildFrame(OlleeProtocol.CMD_NAME, byteArrayOf(4, 5))
+        val stream = first + second
+
+        for (split in 1 until stream.size) {
+            val reassembler = FrameReassembler()
+            val frames = reassembler.feed(stream.copyOfRange(0, split)) +
+                reassembler.feed(stream.copyOfRange(split, stream.size))
+            assertEquals(listOf(OlleeProtocol.CMD_INFO, OlleeProtocol.CMD_NAME), frames.map { it.cmd })
+            assertTrue(frames.all { it.crcOk })
+        }
+    }
+
+    @Test
+    fun reassemblerHandlesOneByteNotifications() {
+        val expected = OlleeProtocol.buildFrame(OlleeProtocol.CMD_LIVE, byteArrayOf(0x12, 0x34))
+        val reassembler = FrameReassembler()
+        val frames = expected.flatMap { byte -> reassembler.feed(byteArrayOf(byte)) }
+
+        assertEquals(1, frames.size)
+        assertEquals(OlleeProtocol.CMD_LIVE, frames.single().cmd)
+        assertArrayEquals(byteArrayOf(0x12, 0x34), frames.single().payload)
+    }
 }
