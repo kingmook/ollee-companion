@@ -1,12 +1,19 @@
 package com.ollee.companion
 
 import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
@@ -45,6 +52,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -61,30 +69,9 @@ import kotlin.math.ceil
 import kotlin.math.floor
 
 class MainActivity : ComponentActivity() {
-
-    private val permissions: Array<String>
-        get() = buildList {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                add(Manifest.permission.BLUETOOTH_SCAN)
-                add(Manifest.permission.BLUETOOTH_CONNECT)
-            }
-            add(Manifest.permission.ACCESS_COARSE_LOCATION)
-            add(Manifest.permission.ACCESS_FINE_LOCATION)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                add(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }.toTypedArray()
-
-    private val permissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        // Only request permissions that haven't been granted yet.
-        if (permissions.any { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }) {
-            permissionLauncher.launch(permissions)
-        }
         setContent {
             OlleeTheme {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -95,11 +82,177 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private enum class PermissionPurpose(val title: String, val explanation: String) {
+    BLUETOOTH(
+        "Bluetooth permission needed",
+        "Ollee Companion needs nearby-device access to find and connect to your watch.",
+    ),
+    CONNECTION(
+        "Connection permission needed",
+        "Bluetooth access and notifications are needed to maintain the watch connection " +
+            "and show its required foreground-service status.",
+    ),
+    LOCATION(
+        "Location permission needed",
+        "Location is used only when you request local sunrise and sunset times.",
+    ),
+}
+
+private data class PermissionNotice(
+    val title: String,
+    val explanation: String,
+    val settingsIntent: Intent? = null,
+)
+
+private fun scanPermissions(): Array<String> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+    arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+} else {
+    arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
+}
+
+private fun connectionPermissions(): Array<String> = buildList {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        add(Manifest.permission.BLUETOOTH_CONNECT)
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        add(Manifest.permission.POST_NOTIFICATIONS)
+    }
+}.toTypedArray()
+
+private fun locationPermissions() = arrayOf(
+    Manifest.permission.ACCESS_COARSE_LOCATION,
+    Manifest.permission.ACCESS_FINE_LOCATION,
+)
+
+private fun Context.hasPermissions(permissions: Array<String>): Boolean =
+    permissions.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
+
+private fun Context.hasLocationPermission(): Boolean =
+    ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+        PackageManager.PERMISSION_GRANTED ||
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
+        PackageManager.PERMISSION_GRANTED
+
+private fun Context.isBluetoothReady(): Boolean = runCatching {
+    val manager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+    manager.adapter?.isEnabled == true
+}.getOrDefault(false)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OlleeScreen(vm: MainViewModel = viewModel()) {
     val ui by vm.ui.collectAsStateWithLifecycle()
+    val currentConnection by rememberUpdatedState(ui.connection)
     val snackbar = remember { SnackbarHostState() }
+    val context = LocalContext.current
+
+    var pendingPermissionAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var pendingPurpose by remember { mutableStateOf<PermissionPurpose?>(null) }
+    var pendingBluetoothAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var notice by remember { mutableStateOf<PermissionNotice?>(null) }
+
+    val enableBluetooth = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        val action = pendingBluetoothAction
+        pendingBluetoothAction = null
+        if (context.isBluetoothReady()) {
+            action?.invoke()
+        } else {
+            notice = PermissionNotice(
+                "Bluetooth is off",
+                "Turn on Bluetooth to scan for or connect to your Ollee watch.",
+                Intent(Settings.ACTION_BLUETOOTH_SETTINGS),
+            )
+        }
+    }
+
+    fun withBluetoothReady(action: () -> Unit) {
+        if (context.isBluetoothReady()) {
+            action()
+        } else {
+            pendingBluetoothAction = action
+            enableBluetooth.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+        }
+    }
+
+    val requestPermissions = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        val action = pendingPermissionAction
+        val purpose = pendingPurpose
+        pendingPermissionAction = null
+        pendingPurpose = null
+        val granted = if (purpose == PermissionPurpose.LOCATION) {
+            context.hasLocationPermission()
+        } else {
+            result.values.all { it }
+        }
+        if (granted) {
+            action?.invoke()
+        } else if (purpose != null) {
+            notice = PermissionNotice(
+                purpose.title,
+                purpose.explanation,
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:${context.packageName}"),
+                ),
+            )
+        }
+    }
+
+    fun withPermissions(
+        purpose: PermissionPurpose,
+        permissions: Array<String>,
+        action: () -> Unit,
+    ) {
+        val missing = permissions.filter {
+            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) {
+            action()
+        } else {
+            pendingPurpose = purpose
+            pendingPermissionAction = action
+            requestPermissions.launch(missing.toTypedArray())
+        }
+    }
+
+    val connectWatch: (String) -> Unit = { address ->
+        withPermissions(PermissionPurpose.CONNECTION, connectionPermissions()) {
+            withBluetoothReady { vm.connect(address) }
+        }
+    }
+    val toggleScan: () -> Unit = {
+        if (ui.scanning) {
+            vm.stopScan()
+        } else {
+            withPermissions(PermissionPurpose.BLUETOOTH, scanPermissions()) {
+                withBluetoothReady { vm.startScan() }
+            }
+        }
+    }
+    val locate: () -> Unit = {
+        if (context.hasLocationPermission()) {
+            vm.computeSun()
+        } else {
+            withPermissions(PermissionPurpose.LOCATION, locationPermissions()) { vm.computeSun() }
+        }
+    }
+
+    // A remembered watch reconnects silently only when every prerequisite is
+    // already satisfied. Missing permissions are requested later, in context,
+    // when the user taps Connect rather than during app startup.
+    LaunchedEffect(Unit) {
+        val address = vm.lastAddress
+        if (
+            address != null && ui.connection == ConnectionState.DISCONNECTED &&
+            context.hasPermissions(connectionPermissions()) && context.isBluetoothReady()
+        ) {
+            vm.connect(address)
+        }
+    }
 
     LaunchedEffect(ui.message) {
         ui.message?.let { snackbar.showSnackbar(it); vm.clearMessage() }
@@ -111,9 +264,38 @@ fun OlleeScreen(vm: MainViewModel = viewModel()) {
     // spins up a fresh Activity.
     LaunchedEffect(Unit) {
         val owner = ProcessLifecycleOwner.get()
+        var firstStart = true
         owner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            vm.verifyConnection()
+            if (firstStart) {
+                firstStart = false
+                if (currentConnection == ConnectionState.READY) vm.verifyConnection()
+            } else if (
+                context.hasPermissions(connectionPermissions()) && context.isBluetoothReady()
+            ) {
+                vm.verifyConnection()
+            }
         }
+    }
+
+    notice?.let { item ->
+        AlertDialog(
+            onDismissRequest = { notice = null },
+            title = { Text(item.title) },
+            text = { Text(item.explanation) },
+            confirmButton = {
+                item.settingsIntent?.let { intent ->
+                    TextButton(
+                        onClick = {
+                            notice = null
+                            context.startActivity(intent)
+                        },
+                    ) { Text("Open settings") }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { notice = null }) { Text("Not now") }
+            },
+        )
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -159,9 +341,9 @@ fun OlleeScreen(vm: MainViewModel = viewModel()) {
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(start = 4.dp, top = 4.dp),
                 )
-                FeatureGrid(ui, vm)
+                FeatureGrid(ui, vm, locate)
             } else {
-                ConnectPanel(ui, vm)
+                ConnectPanel(ui, vm, connectWatch, toggleScan)
             }
             Spacer(Modifier.height(24.dp))
         }
@@ -246,7 +428,12 @@ private fun ConnectionPill(state: ConnectionState) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ConnectPanel(ui: UiState, vm: MainViewModel) {
+private fun ConnectPanel(
+    ui: UiState,
+    vm: MainViewModel,
+    onConnect: (String) -> Unit,
+    onToggleScan: () -> Unit,
+) {
     ElevatedCard {
         Column(
             Modifier.fillMaxWidth().padding(24.dp),
@@ -276,12 +463,12 @@ private fun ConnectPanel(ui: UiState, vm: MainViewModel) {
                 // before; a fresh install must scan and pick one.
                 vm.lastAddress?.let { addr ->
                     Button(
-                        onClick = { vm.connect(addr) },
+                        onClick = { onConnect(addr) },
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("Connect watch") }
                 }
                 OutlinedButton(
-                    onClick = { if (ui.scanning) vm.stopScan() else vm.startScan() },
+                    onClick = onToggleScan,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text(if (ui.scanning) "Stop scan" else "Scan for devices") }
             }
@@ -293,7 +480,7 @@ private fun ConnectPanel(ui: UiState, vm: MainViewModel) {
                         supportingContent = { Text(d.address) },
                         leadingContent = { Icon(Icons.Filled.Watch, null) },
                         trailingContent = {
-                            TextButton(onClick = { vm.connect(d.address) }) { Text("Connect") }
+                            TextButton(onClick = { onConnect(d.address) }) { Text("Connect") }
                         },
                     )
                 }
@@ -449,7 +636,7 @@ private fun DayToggle(
 }
 
 @Composable
-private fun SunCard(ui: UiState, vm: MainViewModel, modifier: Modifier = Modifier) {
+private fun SunCard(ui: UiState, onLocate: () -> Unit, modifier: Modifier = Modifier) {
     val fmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     FeatureCard("Rise / Set", Icons.Filled.WbSunny, modifier) {
         ui.sun?.let { s ->
@@ -458,19 +645,19 @@ private fun SunCard(ui: UiState, vm: MainViewModel, modifier: Modifier = Modifie
                 StatTile("Sunset", s.sunsetEpoch?.let { fmt.format(Date(it)) } ?: "n/a")
             }
         }
-        FilledTonalButton(onClick = { vm.computeSun() }) { Text("Locate") }
+        FilledTonalButton(onClick = onLocate) { Text("Locate") }
     }
 }
 
 @Composable
-private fun FeatureGrid(ui: UiState, vm: MainViewModel) {
+private fun FeatureGrid(ui: UiState, vm: MainViewModel, onLocate: () -> Unit) {
     HealthRecordsCard(ui, vm)
     AlarmCard(vm)
     Row(
         Modifier.fillMaxWidth().height(IntrinsicSize.Min),
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        SunCard(ui, vm, Modifier.weight(1f).fillMaxHeight())
+        SunCard(ui, onLocate, Modifier.weight(1f).fillMaxHeight())
         TimeSyncCard(vm, Modifier.weight(1f).fillMaxHeight())
     }
 }

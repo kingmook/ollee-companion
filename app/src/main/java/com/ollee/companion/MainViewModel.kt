@@ -149,8 +149,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 setMessage(e.message ?: "Stored health history could not be read.")
             }
         }
-        // On launch, auto-connect to the last successfully connected watch.
-        lastAddress?.let { connect(it) }
+        // Initial auto-connect is initiated by the UI only after Bluetooth and
+        // foreground-service notification permissions have been confirmed.
     }
 
     private val scanner get() =
