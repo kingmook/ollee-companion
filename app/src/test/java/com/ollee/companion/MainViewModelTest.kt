@@ -2,6 +2,9 @@ package com.ollee.companion
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
 import app.cash.turbine.test
 import com.ollee.companion.ble.ConnectionState
 import com.ollee.companion.ble.OlleeRepository
@@ -26,6 +29,7 @@ class MainViewModelTest {
     private lateinit var app: OlleeApp
     private lateinit var repo: OlleeRepository
     private lateinit var viewModel: MainViewModel
+    private lateinit var viewModelStore: ViewModelStore
     
     private val connectionStateFlow = MutableStateFlow(ConnectionState.DISCONNECTED)
 
@@ -44,12 +48,24 @@ class MainViewModelTest {
         
         every { repo.connectionState } returns connectionStateFlow
         
-        viewModel = MainViewModel(app)
+        viewModelStore = ViewModelStore()
+        val factory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                MainViewModel(app) as T
+        }
+        viewModel = ViewModelProvider(viewModelStore, factory)[MainViewModel::class.java]
     }
 
     @After
     fun tearDown() {
-        Dispatchers.resetMain()
+        // Match the real owner lifecycle: cancelling viewModelScope must happen
+        // while the test Main dispatcher is still installed.
+        try {
+            viewModelStore.clear()
+        } finally {
+            Dispatchers.resetMain()
+        }
     }
 
     @Test
