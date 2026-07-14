@@ -3,7 +3,7 @@
 I love the Ollee board drop-in replacement for classic Casio watches. Unfortunately, 
 the official Android app doesn't work without play services (ie LineageOS devices). 
 
-This is a simple personal Android App to sync time, health info, and set alarms built with the help of Opus 4.8
+This is a simple personal Android App to sync time, health info, and set alarms built with the help of Opus, Fable, Gemma, and Tera.
 - it's rough but it works for me
 
 A native Android app (Kotlin + Jetpack Compose) for the Ollee watch, built on
