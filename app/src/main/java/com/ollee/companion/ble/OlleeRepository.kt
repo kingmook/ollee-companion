@@ -2,14 +2,12 @@ package com.ollee.companion.ble
 
 import android.util.Log
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 
 private const val MAX_RECORDS = 5_000        // sanity cap on a (possibly garbage) count
-private const val CLEANUP_SETTLE_MS = 300L
 private const val TAG = "OlleeRepository"
 
 data class RecordSyncResult(
@@ -77,15 +75,18 @@ class OlleeRepository(val gatt: OlleeGattManager) {
 
     /**
      * Drain the watch's health/activity log: ask for the count (0x27), fetch
-     * each record (0x28), then acknowledge (0x2d). The result distinguishes a
-     * complete drain from partial data; partial drains are never acknowledged.
+     * each record (0x28), durably persist them, then acknowledge (0x2d). The
+     * result distinguishes a complete drain from partial data; partial drains
+     * are persisted but never acknowledged.
      *
      * Runs as a burst: keep-alive paused (a CMD_LIVE poll slipping between
      * fetches wedges the watch so it stops answering 0x28) and the connection
      * bumped to high priority so the many fetch round-trips don't crawl at the
      * watch's power-saving connection interval.
      */
-    suspend fun syncRecords(): RecordSyncResult = gatt.burst {
+    suspend fun syncRecords(
+        persistRecords: suspend (List<OlleeProtocol.Record>) -> Unit,
+    ): RecordSyncResult = gatt.burst {
         val count = try {
             countRecords()
         } catch (e: CancellationException) {
@@ -114,19 +115,27 @@ class OlleeRepository(val gatt: OlleeGattManager) {
             )
         }
         val records = ArrayList<OlleeProtocol.Record>(count)
+
+        suspend fun preservePartial(reason: String): RecordSyncResult {
+            // A retry may return these records again. The durable store is
+            // deliberately idempotent, so preserving them before aborting is safe.
+            persistRecords(records.toList())
+            return RecordSyncResult(
+                records, count, drained = false,
+                acknowledged = false, failure = reason,
+            )
+        }
+
         repeat(count) { index ->
             try {
                 val frame = gatt.request(
-                    OlleeProtocol.CMD_REC_FETCH, timeoutMs = 4_000, retries = 1,
+                    OlleeProtocol.CMD_REC_FETCH, timeoutMs = 4_000, retries = 0,
                 )
                 val record = OlleeProtocol.parseRecord(frame.payload)
                 if (record == null) {
                     val reason = "Watch returned a malformed record at ${index + 1} of $count"
                     Log.w(TAG, reason)
-                    return@burst RecordSyncResult(
-                        records, count, drained = false,
-                        acknowledged = false, failure = reason,
-                    )
+                    return@burst preservePartial(reason)
                 }
                 records.add(record)
             } catch (e: CancellationException) {
@@ -137,30 +146,24 @@ class OlleeRepository(val gatt: OlleeGattManager) {
                 val reason = "Record fetch ${index + 1} of $count failed: " +
                     (e.message ?: "unknown error")
                 Log.w(TAG, reason, e)
-                return@burst RecordSyncResult(
-                    records, count, drained = false,
-                    acknowledged = false, failure = reason,
-                )
+                return@burst preservePartial(reason)
             }
         }
 
+        // The official app commits its database batch before clearing the watch.
+        // If this throws, 0x2d is deliberately never sent and the watch retains
+        // the complete batch for a later idempotent retry.
+        persistRecords(records.toList())
+
         var cleanupFailure: String? = null
         val cleanupConfirmed = try {
-            // This firmware accepts 0x2d at the ATT layer but does not reliably
-            // send the presumed 0x4d application response. Send it exactly once,
-            // then verify the actual queue state instead of retrying a destructive
-            // command merely because an optional response was absent.
-            gatt.send(OlleeProtocol.buildFrame(OlleeProtocol.CMD_SYNC_DONE))
-            delay(CLEANUP_SETTLE_MS)
-            val remaining = countRecords()
-            if (remaining == 0) {
-                true
-            } else {
-                val reason = "Watch still reports $remaining records after cleanup"
-                cleanupFailure = reason
-                Log.w(TAG, reason)
-                false
-            }
+            // Non-empty official syncs return 0x4d in roughly 550 ms. Await it,
+            // but never retry this destructive command when an acknowledgement
+            // is lost. The already-persisted records make a later re-fetch safe.
+            gatt.request(
+                OlleeProtocol.CMD_SYNC_DONE, timeoutMs = 3_000, retries = 0,
+            )
+            true
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

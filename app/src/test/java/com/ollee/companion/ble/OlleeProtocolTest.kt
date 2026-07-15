@@ -5,6 +5,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZoneOffset
 
 class OlleeProtocolTest {
 
@@ -55,12 +58,31 @@ class OlleeProtocolTest {
             0, 0, 0, 200.toByte(), // end
             0, 0, 1, 44.toByte() // value (300)
         )
-        val record = OlleeProtocol.parseRecord(payload)
+        val record = OlleeProtocol.parseRecord(payload, ZoneOffset.UTC)
         assertNotNull(record)
         assertEquals(0, record!!.type)
         assertEquals(100L, record.tStart)
         assertEquals(200L, record.tEnd)
         assertEquals(300, record.value)
+    }
+
+    @Test
+    fun recordWallClockTimestampIsNormalizedUsingHistoricalZoneOffset() {
+        // The watch emitted 16:30:28 as epoch-shaped local wall time while
+        // Toronto was on EDT. The actual instant was therefore 20:30:28 UTC.
+        val payload = byteArrayOf(
+            0, 0, 0, OlleeProtocol.REC_HEART_RATE.toByte(),
+            0x6A, 0x56, 0x64, 0x24,
+            0, 0, 0, 0,
+            0, 0, 0, 38,
+        )
+
+        val record = OlleeProtocol.parseRecord(payload, ZoneId.of("America/Toronto"))
+
+        assertNotNull(record)
+        assertEquals(Instant.parse("2026-07-14T20:30:28Z").epochSecond, record!!.tStart)
+        assertEquals(0L, record.tEnd)
+        assertEquals(38, record.bpm)
     }
 
     @Test

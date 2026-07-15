@@ -74,30 +74,36 @@ class OlleeRepositoryTest {
     @Test
     fun completeRecordDrainIsAcknowledged() = runTest {
         runBurstBlocks()
-        var countReads = 0
+        val events = mutableListOf<String>()
         coEvery {
             gatt.request(OlleeProtocol.CMD_REC_COUNT, any(), 5_000, 2)
         } coAnswers {
-            frame(
-                OlleeProtocol.CMD_REC_COUNT,
-                intPayload(if (countReads++ == 0) 1 else 0),
-            )
+            events += "count"
+            frame(OlleeProtocol.CMD_REC_COUNT, intPayload(1))
         }
         coEvery {
-            gatt.request(OlleeProtocol.CMD_REC_FETCH, any(), 4_000, 1)
-        } returns frame(OlleeProtocol.CMD_REC_FETCH, recordPayload(value = 123))
-        coEvery { gatt.send(any()) } returns Unit
+            gatt.request(OlleeProtocol.CMD_REC_FETCH, any(), 4_000, 0)
+        } coAnswers {
+            events += "fetch"
+            frame(OlleeProtocol.CMD_REC_FETCH, recordPayload(value = 123))
+        }
+        coEvery {
+            gatt.request(OlleeProtocol.CMD_SYNC_DONE, any(), 3_000, 0)
+        } coAnswers {
+            events += "cleanup"
+            frame(OlleeProtocol.CMD_SYNC_DONE)
+        }
 
-        val result = repo.syncRecords()
+        val result = repo.syncRecords { events += "persist" }
 
         assertEquals(true, result.drained)
         assertEquals(true, result.acknowledged)
         assertEquals(123, result.records.single().value)
+        assertEquals(listOf("count", "fetch", "persist", "cleanup"), events)
         coVerifyOrder {
             gatt.request(OlleeProtocol.CMD_REC_COUNT, any(), 5_000, 2)
-            gatt.request(OlleeProtocol.CMD_REC_FETCH, any(), 4_000, 1)
-            gatt.send(any())
-            gatt.request(OlleeProtocol.CMD_REC_COUNT, any(), 5_000, 2)
+            gatt.request(OlleeProtocol.CMD_REC_FETCH, any(), 4_000, 0)
+            gatt.request(OlleeProtocol.CMD_SYNC_DONE, any(), 3_000, 0)
         }
     }
 
@@ -108,7 +114,7 @@ class OlleeRepositoryTest {
             gatt.request(OlleeProtocol.CMD_REC_COUNT, any(), 5_000, 2)
         } returns frame(OlleeProtocol.CMD_REC_COUNT, intPayload(0))
 
-        val result = repo.syncRecords()
+        val result = repo.syncRecords { }
 
         assertEquals(true, result.drained)
         assertEquals(true, result.acknowledged)
@@ -117,31 +123,32 @@ class OlleeRepositoryTest {
         coVerify(exactly = 0) {
             gatt.request(OlleeProtocol.CMD_REC_FETCH, any(), any(), any())
         }
+        coVerify(exactly = 0) {
+            gatt.request(OlleeProtocol.CMD_SYNC_DONE, any(), any(), any())
+        }
     }
 
     @Test
-    fun cleanupThatLeavesRecordsIsNotAcknowledged() = runTest {
+    fun missingCleanupAcknowledgementIsNotRetried() = runTest {
         runBurstBlocks()
-        var countReads = 0
         coEvery {
             gatt.request(OlleeProtocol.CMD_REC_COUNT, any(), 5_000, 2)
-        } coAnswers {
-            frame(
-                OlleeProtocol.CMD_REC_COUNT,
-                intPayload(if (countReads++ == 0) 1 else 1),
-            )
-        }
+        } returns frame(OlleeProtocol.CMD_REC_COUNT, intPayload(1))
         coEvery {
-            gatt.request(OlleeProtocol.CMD_REC_FETCH, any(), 4_000, 1)
+            gatt.request(OlleeProtocol.CMD_REC_FETCH, any(), 4_000, 0)
         } returns frame(OlleeProtocol.CMD_REC_FETCH, recordPayload(value = 456))
-        coEvery { gatt.send(any()) } returns Unit
+        coEvery {
+            gatt.request(OlleeProtocol.CMD_SYNC_DONE, any(), 3_000, 0)
+        } throws IOException("timeout waiting for 0x4d")
 
-        val result = repo.syncRecords()
+        val result = repo.syncRecords { }
 
         assertEquals(true, result.drained)
         assertEquals(false, result.acknowledged)
-        assertEquals(true, result.failure?.contains("still reports 1") == true)
-        coVerify(exactly = 1) { gatt.send(any()) }
+        assertEquals(true, result.failure?.contains("0x4d") == true)
+        coVerify(exactly = 1) {
+            gatt.request(OlleeProtocol.CMD_SYNC_DONE, any(), 3_000, 0)
+        }
     }
 
     @Test
@@ -152,20 +159,48 @@ class OlleeRepositoryTest {
         } returns frame(OlleeProtocol.CMD_REC_COUNT, intPayload(2))
         var fetches = 0
         coEvery {
-            gatt.request(OlleeProtocol.CMD_REC_FETCH, any(), 4_000, 1)
+            gatt.request(OlleeProtocol.CMD_REC_FETCH, any(), 4_000, 0)
         } coAnswers {
             if (fetches++ == 0) frame(OlleeProtocol.CMD_REC_FETCH, recordPayload(value = 321))
             else throw IOException("dropped response")
         }
+        var persisted = emptyList<OlleeProtocol.Record>()
 
-        val result = repo.syncRecords()
+        val result = repo.syncRecords { persisted = it }
 
         assertEquals(false, result.drained)
         assertEquals(false, result.acknowledged)
         assertEquals(2, result.expectedCount)
         assertEquals(321, result.records.single().value)
+        assertEquals(321, persisted.single().value)
+        coVerify(exactly = 2) {
+            gatt.request(OlleeProtocol.CMD_REC_FETCH, any(), 4_000, 0)
+        }
         coVerify(exactly = 0) {
-            gatt.send(any())
+            gatt.request(OlleeProtocol.CMD_SYNC_DONE, any(), any(), any())
+        }
+    }
+
+    @Test
+    fun persistenceFailureLeavesWatchRecordsUnacknowledged() = runTest {
+        runBurstBlocks()
+        coEvery {
+            gatt.request(OlleeProtocol.CMD_REC_COUNT, any(), 5_000, 2)
+        } returns frame(OlleeProtocol.CMD_REC_COUNT, intPayload(1))
+        coEvery {
+            gatt.request(OlleeProtocol.CMD_REC_FETCH, any(), 4_000, 0)
+        } returns frame(OlleeProtocol.CMD_REC_FETCH, recordPayload(value = 654))
+
+        var error: Exception? = null
+        try {
+            repo.syncRecords { throw IOException("disk full") }
+        } catch (e: Exception) {
+            error = e
+        }
+
+        assertEquals("disk full", error?.message)
+        coVerify(exactly = 0) {
+            gatt.request(OlleeProtocol.CMD_SYNC_DONE, any(), any(), any())
         }
     }
 
@@ -176,7 +211,7 @@ class OlleeRepositoryTest {
             gatt.request(OlleeProtocol.CMD_REC_COUNT, any(), 5_000, 2)
         } returns frame(OlleeProtocol.CMD_REC_COUNT, byteArrayOf(0))
 
-        val result = repo.syncRecords()
+        val result = repo.syncRecords { }
 
         assertEquals(false, result.drained)
         assertEquals(false, result.acknowledged)
@@ -193,7 +228,7 @@ class OlleeRepositoryTest {
             gatt.request(OlleeProtocol.CMD_REC_COUNT, any(), 5_000, 2)
         } throws IOException("timeout waiting for record count")
 
-        val result = repo.syncRecords()
+        val result = repo.syncRecords { }
 
         assertEquals(false, result.drained)
         assertEquals(true, result.failure?.contains("timeout") == true)

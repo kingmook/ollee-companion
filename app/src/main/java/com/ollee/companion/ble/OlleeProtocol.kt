@@ -2,6 +2,9 @@ package com.ollee.companion.ble
 
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.TimeZone
 import java.util.UUID
 
@@ -51,27 +54,44 @@ object OlleeProtocol {
     // Health/activity record log (drained on a full sync).
     const val CMD_REC_COUNT = 0x27   // -> 0x47: uint32 count of records waiting
     const val CMD_REC_FETCH = 0x28   // -> 0x48: one record; poll to drain the log
-    const val CMD_SYNC_DONE = 0x2D   // finalize after reading; 0x4D is firmware-dependent
+    const val CMD_SYNC_DONE = 0x2D   // finalize a non-empty read batch -> 0x4D ack
 
     const val REC_STEPS = 0          // value = steps in [tStart, tEnd]
     const val REC_TEMPERATURE = 1    // hourly window; value = centi-degrees C
     const val REC_HEART_RATE = 2     // instantaneous sample (tEnd = 0); value = bpm
 
-    /** A single 0x48 health/activity record. Timestamps are Unix seconds. */
+    /** A single 0x48 health/activity record. Timestamps are normalized Unix seconds. */
     data class Record(val type: Int, val tStart: Long, val tEnd: Long, val value: Int) {
         val celsius: Double get() = value / 100.0
         val bpm: Int get() = value
     }
 
-    /** Decode a 0x48 record payload: [type:4][tStart:4][tEnd:4][value:4], big-endian. */
-    fun parseRecord(payload: ByteArray): Record? {
+    /**
+     * Decode a 0x48 record payload: [type:4][tStart:4][tEnd:4][value:4], big-endian.
+     *
+     * The watch encodes timestamps as local wall-clock fields in an epoch-shaped
+     * integer (UTC epoch + local offset), rather than as true UTC instants. Decode
+     * those fields in [zoneId] so storage and day grouping use real Unix seconds.
+     */
+    fun parseRecord(payload: ByteArray, zoneId: ZoneId = ZoneId.systemDefault()): Record? {
         if (payload.size < 16) return null
         fun be(off: Int): Long {
             var v = 0L
             for (i in off until (off + 4)) v = (v shl 8) or (payload[i].toLong() and 0xFF)
             return v
         }
-        return Record(be(0).toInt(), be(4), be(8), be(12).toInt())
+        return Record(
+            be(0).toInt(),
+            watchLocalEpochToUnix(be(4), zoneId),
+            watchLocalEpochToUnix(be(8), zoneId),
+            be(12).toInt(),
+        )
+    }
+
+    private fun watchLocalEpochToUnix(value: Long, zoneId: ZoneId): Long {
+        if (value == 0L) return 0L
+        val localFields = LocalDateTime.ofEpochSecond(value, 0, ZoneOffset.UTC)
+        return localFields.atZone(zoneId).toEpochSecond()
     }
 
     /** CRC-16/CCITT-FALSE. */

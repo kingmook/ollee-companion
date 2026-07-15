@@ -106,8 +106,10 @@ class SyncCoordinator(
     }
 
     private suspend fun syncHealthLocked(): HealthSyncOutcome = try {
-        val sync = repository.syncRecords()
-        val all = withContext(ioDispatcher) { store.merge(sync.records) }
+        var all = _records.value
+        val sync = repository.syncRecords { records ->
+            all = withContext(ioDispatcher) { store.merge(records) }
+        }
         _records.value = all
         val error = when {
             !sync.drained -> sync.failure ?: "Health record sync did not complete"
